@@ -8,6 +8,7 @@ network thread.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -20,7 +21,7 @@ from ..core.constants import STATUS_COMPLETED
 from ..core.errors import AI3DError, ImportError_
 from ..core.logging import get_logger
 from ..core.models import GenerationRequest, ProviderConfig
-from ..providers.registry import get_provider_class
+from ..providers.registry import PROVIDERS, get_provider_class
 from ..services.history import make_entry, read_history, visible_history_index_to_storage, write_history
 from ..services.prompt_service import effective_prompt
 from ..services.job_manager import JobManager, JobSnapshot
@@ -143,9 +144,10 @@ def _validate_props(props: Any, context: Any = None) -> None:
         raise AI3DError("; ".join(errors))
 
 
-def _import_downloaded(context: Any, path: str) -> Any:
+def _import_downloaded(context: Any, path: str, *, force: bool = False) -> Any:
+    """Import a downloaded asset; explicit user imports bypass the auto toggle."""
     props = _scene_props(context)
-    if not props.auto_import or not path:
+    if not path or (not force and not props.auto_import):
         return
     try:
         from ..services.import_manager import ImportManager, ImportOptions
@@ -216,6 +218,9 @@ class AI3D_OT_generate(Operator):
             request = _request_from_props(props)
             provider_cls = get_provider_class(props.provider)
             provider_url = _provider_url_from_context(context, props)
+            # The offline mock adapter never needs a configured URL.
+            if not provider_url and props.provider == "mock":
+                provider_url = "http://127.0.0.1:8000"
             config = _runtime_config(context, props)
             if not str(config.base_url or "").strip() and str(getattr(props, "provider", "mock") or "mock") == "mock":
                 config.base_url = provider_url
@@ -295,9 +300,13 @@ class AI3D_OT_retry(Operator):
             self.report({'ERROR'}, "Select a history entry to retry.")
             return {'CANCELLED'}
         item = props.history[index]
+        provider_id = getattr(item, "provider", "")
+        if provider_id not in PROVIDERS:
+            self.report({'ERROR'}, f"The recorded provider '{provider_id}' is no longer available.")
+            return {'CANCELLED'}
         props.prompt = item.prompt
         props.negative_prompt = getattr(item, "negative_prompt", "")
-        props.provider = item.provider
+        props.provider = provider_id
         props.model = item.model
         props.quality = item.quality
         props.output_format = item.output_format.lower()
@@ -347,13 +356,24 @@ class AI3D_OT_import(Operator):
             if not candidate.is_file():
                 self.report({'ERROR'}, "The selected generated asset no longer exists.")
                 return {'CANCELLED'}
-            _import_downloaded(context, str(candidate))
+            _import_downloaded(context, str(candidate), force=True)
             props.status = "3D asset ready."
             return {'FINISHED'}
         except (AI3DError, ImportError_, ValueError) as exc:
             props.error_message = exc.user_message() if isinstance(exc, (AI3DError, ImportError_)) else str(exc)
             self.report({'ERROR'}, props.error_message)
             return {'CANCELLED'}
+
+
+class AI3D_OT_refresh_history(Operator):
+    bl_idname = "ai3d.refresh_history"
+    bl_label = "Refresh History"
+    bl_description = "Reload generation history from the local history file"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context: Any) -> set[str]:
+        _load_history_into_props(context)
+        return {'FINISHED'}
 
 
 class AI3D_OT_delete_history_entry(Operator):
@@ -439,7 +459,8 @@ class AI3D_OT_open_asset_folder(Operator):
             else:
                 import subprocess
 
-                subprocess.Popen(["open", str(path)], close_fds=True)
+                opener = "open" if sys.platform == "darwin" else "xdg-open"
+                subprocess.Popen([opener, str(path)], close_fds=True)
         except Exception as exc:
             self.report({'ERROR'}, f"Could not open folder: {exc}")
             return {'CANCELLED'}
@@ -581,6 +602,7 @@ classes = (
     AI3D_OT_cancel,
     AI3D_OT_retry,
     AI3D_OT_import,
+    AI3D_OT_refresh_history,
     AI3D_OT_delete_history_entry,
     AI3D_OT_clear_history,
     AI3D_OT_open_settings,

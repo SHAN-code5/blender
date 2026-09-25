@@ -61,9 +61,9 @@ class DownloadManager:
             self.client = HttpClient(timeout=timeout, allowed_redirect_hosts=self.allowed_hosts)
         else:
             self.client = client
-            setter = getattr(self.client, "set_allowed_redirect_origins", None)
-            if callable(setter):
-                setter(self._redirect_origins_for())
+            # A supplied client keeps its own redirect policy until a download
+            # pins exact origins; an empty set must not widen it to allow-any.
+            self._configure_redirect_policy(self.client)
 
     def _validate_download_url(self, url: str, provider: Any = None) -> str:
         target = validate_http_url(url, "Asset download URL")

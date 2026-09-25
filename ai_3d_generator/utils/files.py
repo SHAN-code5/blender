@@ -84,8 +84,9 @@ def cleanup_partial_downloads(root: os.PathLike[str] | str) -> None:
 def format_content_disposition(value: str) -> Optional[str]:
     """Extract a conservative filename from a Content-Disposition header."""
     marker = "filename="
-    if marker not in value.lower():
+    index = value.lower().find(marker)
+    if index < 0:
         return None
-    tail = value.lower().split(marker, 1)[1]
+    tail = value[index + len(marker):]
     filename = tail.split(";", 1)[0].strip().strip('"')
     return sanitize_filename(filename, "asset")

@@ -74,8 +74,8 @@ python3 -m compileall -q ai_3d_generator tests
 blender --command extension validate ai_3d_generator
 blender --command extension build --source-dir ai_3d_generator --output-dir checks --verbose
 blender --command extension validate checks/ai_3d_generator-<version>.zip
-blender --factory-startup -b --python registration_check.py
-blender --factory-startup -b --python phase3_smoke.py
+blender --factory-startup -b --python checks/registration_probe.py
+blender --factory-startup -b --python checks/registration_probe_twice.py
 ```
 
 The checked-in historical `checks/ai_3d_generator-0.1.0.zip` is not a fresh

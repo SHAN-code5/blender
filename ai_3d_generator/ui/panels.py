@@ -169,8 +169,10 @@ class AI3D_PT_history(Panel):
             if len(props.history) > 1:
                 op = row.operator("ai3d.delete_history_entry", text="", icon='X')
                 op.index = index
+        row = layout.row(align=True)
+        row.operator("ai3d.refresh_history", text="REFRESH", icon='FILE_REFRESH')
         if props.history:
-            layout.operator("ai3d.clear_history", text="CLEAR HISTORY", icon='TRASH')
+            row.operator("ai3d.clear_history", text="CLEAR HISTORY", icon='TRASH')
         if props.output_path:
             layout.operator("ai3d.import", text="IMPORT LAST ASSET", icon='IMPORT').filepath = props.output_path
             layout.operator("ai3d.export_asset", text="EXPORT LAST ASSET", icon='EXPORT')
@@ -226,9 +228,15 @@ class AI3D_PT_settings(Panel):
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
+        props = context.scene.ai3d
         layout.label(text="Provider URL, credentials, and endpoints are managed in Preferences", icon='INFO')
         layout.operator("ai3d.open_settings", text="OPEN PREFERENCES", icon='PREFERENCES')
         layout.operator("ai3d.open_asset_folder", text="OPEN ASSET FOLDER", icon='FILE_FOLDER')
+        box = layout.box()
+        box.label(text="Workspace Settings")
+        column = box.column(align=True)
+        for name in ("cache_dir", "timeout", "poll_interval", "job_timeout", "max_asset_size_mb", "debug_mode"):
+            column.prop(props, name)
         layout.label(text="Unsupported provider modes stay unavailable", icon='INFO')
 
 

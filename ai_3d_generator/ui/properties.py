@@ -20,20 +20,19 @@ from ..providers.registry import PROVIDERS
 
 
 def _provider_items(self: Any, context: Any) -> list[tuple[str, str, str]]:
-    return [(key, cls.display_name, key) for key, cls in PROVIDERS.items()]
+    return [
+        (key, cls.display_name, (cls.__doc__ or "3D generation provider").strip().splitlines()[0])
+        for key, cls in PROVIDERS.items()
+    ]
 
 
-def _model_items(self: Any, context: Any) -> list[tuple[str, str, str]]:
-    try:
-        from ..providers.registry import get_provider_class
-        provider = get_provider_class(self.provider)()
-        return [(model, model, model) for model in provider.models()]
-    except Exception:
-        return [("default", "Default", "Provider default model")]
+def _template_items(self: Any, context: Any) -> list[tuple[str, str, str]]:
+    from ..services.prompt_service import PromptTemplates
 
-
-def _parse_headers(value: str) -> dict[str, str]:
-    return {}
+    return [
+        (template.id, template.name, template.description or template.name)
+        for template in PromptTemplates.defaults().values()
+    ]
 
 
 class AI3D_GeneratedHistoryItem(PropertyGroup):
@@ -65,7 +64,7 @@ class AI3D_Settings(PropertyGroup):
     """Transient UI state stored on Scene and mirrored by Preferences."""
 
     prompt: StringProperty(name="Prompt", default="", description="Describe the 3D object to generate")
-    provider: StringProperty(name="Provider", default="mock", description="Registered provider identifier")
+    provider: EnumProperty(name="Provider", items=_provider_items, default="mock", description="Registered provider identifier")
     model: StringProperty(name="Model", default="default", description="Provider model identifier")
     negative_prompt: StringProperty(name="Negative Prompt", default="")
     quality: EnumProperty(name="Quality", items=[("draft", "Draft", "Fast preview"), ("standard", "Standard", "Balanced quality"), ("high", "High", "Highest supported quality")])
@@ -80,7 +79,7 @@ class AI3D_Settings(PropertyGroup):
     generation_mode: EnumProperty(name="Generation Mode", items=[("text_to_3d", "Text → 3D", "Generate from a text prompt"), ("image_to_3d", "Image → 3D", "Generate from a reference image")], default="text_to_3d")
     image_path: StringProperty(name="Reference Image", default="", subtype='FILE_PATH')
     reference_image: PointerProperty(name="Reference Image Preview", type=bpy.types.Image)
-    prompt_template: StringProperty(name="Prompt Template", default="realistic_prop")
+    prompt_template: EnumProperty(name="Prompt Template", items=_template_items, default="realistic_prop")
     enhance_prompt: BoolProperty(name="Enhance Prompt", default=False)
     enhanced_prompt: StringProperty(name="Enhanced Prompt", default="")
     original_prompt: StringProperty(name="Original Prompt", default="")
