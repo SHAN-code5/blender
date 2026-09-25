@@ -260,3 +260,34 @@ def test_endpoint_template_cannot_escape_configured_provider_host() -> None:
         join_endpoint("https://api.example.test/root", "https://evil.api.example.test/x")
     with pytest.raises(ValidationError):
         join_endpoint("https://api.example.test/root", "http://169.254.169.254/latest/meta-data")
+
+
+def test_validate_config_always_returns_a_list_and_flags_unknown_provider() -> None:
+    base = {
+        "generation_mode": "image_to_3d",
+        "timeout": 60.0,
+        "poll_interval": 2.0,
+        "job_timeout": 900.0,
+    }
+    unknown = config.validate_config({**base, "provider": "not-a-provider"})
+    assert isinstance(unknown, list) and unknown, "unknown provider must produce errors"
+    missing = config.validate_config({**base, "provider": ""})
+    assert isinstance(missing, list) and any("provider" in error.lower() for error in missing)
+
+
+def test_content_disposition_preserves_filename_case() -> None:
+    assert files.format_content_disposition('attachment; FileName="MyAsset.GLB"') == "MyAsset.GLB"
+    assert files.format_content_disposition("inline") is None
+
+
+def test_download_manager_does_not_widen_supplied_client_redirect_policy(tmp_path: Path) -> None:
+    calls = []
+
+    class _Client:
+        timeout = 5.0
+
+        def set_allowed_redirect_origins(self, origins):
+            calls.append(set(origins))
+
+    manager = DownloadManager(tmp_path, client=_Client())
+    assert calls == [], "an empty origin set must not be applied to a supplied client"

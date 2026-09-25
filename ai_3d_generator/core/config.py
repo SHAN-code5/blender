@@ -72,14 +72,27 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
                 errors.append(f"{key} must be between {lower:g} and {upper:g}.")
         except (TypeError, ValueError):
             errors.append(f"{key} must be a number.")
-    if provider not in {"mock", "local_api", "custom_api"}:
-        return
-    if provider != "mock":
+    known_providers = _known_providers()
+    if provider and provider not in known_providers:
+        errors.append(f"Provider must be one of: {', '.join(sorted(known_providers))}.")
+    elif provider and provider != "mock":
         try:
             validation.validate_http_url(str(config.get("base_url", "")), "API Base URL")
         except ValidationError as exc:
             errors.append(exc.user_message())
     return errors
+
+
+def _known_providers() -> set:
+    """Return registered provider ids, falling back to the bundled adapters."""
+    try:
+        from ..providers.registry import PROVIDERS
+
+        if PROVIDERS:
+            return set(PROVIDERS)
+    except Exception:
+        pass
+    return {"mock", "local_api", "custom_api"}
 
 
 def require_valid_config(config: Dict[str, Any]) -> None:

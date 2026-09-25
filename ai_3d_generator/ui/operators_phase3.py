@@ -14,7 +14,7 @@ from ..services.batch_service import BatchQueue
 from ..services.export_manager import export_objects
 from ..services.library_service import AssetLibrary
 from ..services.prompt_service import PromptEnhancer
-from .operators import COORDINATOR, _scene_props
+from .operators import COORDINATOR, _import_downloaded, _scene_props
 from .runtime_phase3 import library_for_props
 
 
@@ -333,12 +333,22 @@ class AI3D_OT_import_library_asset(Operator):
             self.report({'ERROR'}, "The selected library asset file is unavailable.")
             return {'CANCELLED'}
         try:
-            library.resolve_asset_path(entry.file)
-            result = getattr(bpy.ops.ai3d, "import")(filepath=entry.file)
+            path = library.resolve_asset_path(entry.file)
         except ValidationError:
             self.report({'ERROR'}, "The selected library asset file is unavailable or outside the library root.")
             return {'CANCELLED'}
-        return {'FINISHED'} if 'FINISHED' in result else {'CANCELLED'}
+        # Library containment is the right boundary here: a relocated library
+        # is intentionally outside the transient generation cache.
+        try:
+            result = _import_downloaded(context, str(path), force=True)
+        except AI3DError as exc:
+            self.report({'ERROR'}, exc.user_message())
+            return {'CANCELLED'}
+        if result is None:
+            self.report({'ERROR'}, "Blender did not import the library asset.")
+            return {'CANCELLED'}
+        props.status = "Library asset imported."
+        return {'FINISHED'}
 
 
 class AI3D_OT_delete_library_asset(Operator):
@@ -368,6 +378,16 @@ class AI3D_OT_rename_library_asset(Operator):
 
     asset_id: StringProperty(name="Asset ID", default="")
     name: StringProperty(name="Name", default="")
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        if not self.name:
+            entry = next(
+                (item for item in library_for_props(_scene_props(context), context).list_assets() if item.id == self.asset_id),
+                None,
+            )
+            if entry is not None:
+                self.name = entry.name
+        return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context: Any) -> set[str]:
         name = self.name.strip()
