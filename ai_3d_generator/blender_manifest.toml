@@ -1,0 +1,23 @@
+schema_version = "1.0.0"
+id = "ai_3d_generator"
+version = "0.2.0"
+name = "AI 3D Object Generator"
+tagline = "Generate and import 3D assets from natural language"
+maintainer = "AI 3D Generator Contributors"
+type = "add-on"
+license = ["SPDX:GPL-3.0-or-later"]
+blender_version_min = "4.5.0"
+
+[permissions]
+network = "Connect to a configured 3D generation provider"
+files = "Read downloaded assets and write a local cache"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  ".*",
+  "*.zip",
+  ".venv/",
+  "tests/",
+  "checks/",
+]
