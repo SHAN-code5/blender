@@ -30,11 +30,17 @@ class PostProcessor:
     def process(self, objects: Sequence[Any], options: Optional[PostProcessOptions] = None) -> str:
         options = options or PostProcessOptions()
         meshes = [obj for obj in objects if obj.type == 'MESH']
-        if options.remove_tiny_objects:
-            for obj in list(meshes):
-                if _dimensions(obj).length <= options.tiny_object_size:
+        if options.remove_tiny_objects and meshes:
+            survivors: list[Any] = []
+            for obj in meshes:
+                # _dimensions() already returns the bounding-box length scalar.
+                if _dimensions(obj) <= options.tiny_object_size:
                     bpy.data.objects.remove(obj, do_unlink=True)
-            meshes = [obj for obj in objects if obj.type == 'MESH']
+                else:
+                    survivors.append(obj)
+            # Rebuild from live survivors only; touching the removed objects
+            # afterwards raises ReferenceError and aborts the whole pass.
+            meshes = survivors
         if options.smooth_shading:
             for obj in meshes:
                 for polygon in obj.data.polygons:

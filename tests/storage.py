@@ -76,3 +76,47 @@ def checkLibraryMetadataSchemaIsExplicit(tmp_path: Path):
     library = AssetLibrary(tmp_path)
     assert SCHEMA_VERSION == 1
     assert library.metadata_path.parent == tmp_path
+
+
+def checkLibraryRefusesToOverwriteCorruptMetadata(tmp_path: Path):
+    library = AssetLibrary(tmp_path)
+    raw = '{"schema_version": '
+    library.metadata_path.write_text(raw, encoding="utf-8")
+    source = tmp_path / "source.glb"
+    source.write_bytes(b"fixture")
+    with pytest.raises(ValidationError):
+        library.add_asset(asset_id="a", prompt="chair", provider="mock", model="m", output_format="glb", file_path=source, copy_file=True)
+    # The corrupt file must be left untouched, not rewritten with a single row.
+    assert library.metadata_path.read_text(encoding="utf-8") == raw
+
+
+def checkLibraryRefusesToOverwriteFutureSchemaMetadata(tmp_path: Path):
+    library = AssetLibrary(tmp_path)
+    raw = '{"schema_version": 99, "assets": []}'
+    library.metadata_path.write_text(raw, encoding="utf-8")
+    source = tmp_path / "source.glb"
+    source.write_bytes(b"fixture")
+    with pytest.raises(ValidationError):
+        library.add_asset(asset_id="a", prompt="chair", provider="mock", model="m", output_format="glb", file_path=source, copy_file=True)
+    assert library.metadata_path.read_text(encoding="utf-8") == raw
+
+
+def checkRecordGeneratedAssetSanitizesOddIdCharacters(tmp_path: Path):
+    from ai3dgenerator.services.libraryRecordService import record_generated_asset
+
+    library = AssetLibrary(tmp_path)
+    source = tmp_path / "result.glb"
+    source.write_bytes(b"fixture")
+    entry = record_generated_asset(
+        library,
+        file_path=source,
+        job_id="abc:12/x",
+        prompt="chair",
+        provider="custom_api",
+        model="m",
+        output_format="glb",
+        copy_file=True,
+    )
+    # Colons and slashes in the job id must be reduced to the ID alphabet.
+    assert entry.id.startswith("custom_api-abc-12-x-")
+    assert entry.id in {asset.id for asset in library.list_assets()}

@@ -21,12 +21,23 @@ def _provider_items(self: Any, context: Any) -> list[tuple[str, str, str]]:
     return [(key, cls.display_name, key) for key, cls in PROVIDERS.items()]
 
 
+def _provider_default_index() -> int:
+    """Index of the preferred default provider for the dynamic enum.
+
+    Blender requires an integer ``default`` when ``items`` is a callback, so the
+    mock identifier is resolved to its registry position instead of passing a
+    string default (which fails to register on Blender 5.x).
+    """
+    keys = list(PROVIDERS)
+    return keys.index("mock") if "mock" in keys else 0
+
+
 class AI3D_AddonPreferences(AddonPreferences):
     """Persistent provider and generation settings."""
 
     bl_idname = base_package
 
-    provider: EnumProperty(name="Default Provider", items=_provider_items)
+    provider: EnumProperty(name="Default Provider", items=_provider_items, default=_provider_default_index())
     api_base_url: StringProperty(name="API Base URL", default="http://127.0.0.1:8000")
     api_key: StringProperty(name="API Key", default="", subtype='PASSWORD')
     api_key_env: StringProperty(name="API Key Environment Variable", default="")
