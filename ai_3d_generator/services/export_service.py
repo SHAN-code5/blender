@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from ..core.constants import SUPPORTED_FORMATS
 from ..core.errors import ValidationError

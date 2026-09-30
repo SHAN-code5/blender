@@ -1,12 +1,11 @@
 """Image-to-3D provider interface; adapters stay capability-honest."""
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from ..core.capabilities import ProviderCapabilities
 from ..core.errors import ValidationError
 from ..core.models import JobHandle
-from ..utils.images import validate_image_path
 from .base import Base3DProvider
 
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_3d_generator.core.errors import DownloadError, ProviderResponseError
+from ai_3d_generator.core.errors import DownloadError
 from ai_3d_generator.core.capabilities import ProviderCapabilities
 from ai_3d_generator.core.models import ProviderConfig
 from ai_3d_generator.providers.custom_rest import CustomRESTProvider

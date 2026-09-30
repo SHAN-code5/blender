@@ -18,6 +18,15 @@
   before the request.
 - Dynamic provider and prompt-template enums use integer defaults so the
   extension registers on Blender 5.x.
+- Failed and timed-out jobs keep the progress they actually reached instead of
+  showing a full progress bar.
+- The generation timer uses the clamped polling interval rather than the raw
+  Scene value.
+- History is written before best-effort import/library side effects, and
+  library-recording errors are caught, so one failure cannot drop the history
+  record.
+- Deleting a missing batch job now reports an error instead of failing silently.
+- Removed unused imports across the package and test suite.
 
 ## 0.2.0 — Phase 3 workspace
 

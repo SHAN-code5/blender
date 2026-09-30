@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
 
 from .library_service import AssetLibrary, AssetMetadata
 from ..utils.hashing import content_hash

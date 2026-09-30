@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from ai_3d_generator.core.errors import ProviderResponseError, ValidationError
+from ai_3d_generator.core.models import GenerationRequest
+from ai_3d_generator.providers.mock import MockProvider
 from ai_3d_generator.services.download_manager import DownloadManager, detect_format
+from ai_3d_generator.services.job_manager import JobManager
 from ai_3d_generator.services.library_service import AssetLibrary
 from ai_3d_generator.utils.http import HttpResponse
 from ai_3d_generator.utils.paths import join_endpoint
@@ -78,6 +81,21 @@ def test_download_manager_accepts_non_asset_url_suffix(tmp_path: Path) -> None:
     assert asset.path.is_file()
 
 
+# --- services.job_manager terminal progress ------------------------------------
+
+
+def test_failed_job_does_not_report_full_progress(tmp_path: Path) -> None:
+    provider = MockProvider()
+    job = JobManager(provider, DownloadManager(tmp_path))
+    job.start(GenerationRequest(prompt="mock-fail chair").to_dict())
+    for _ in range(8):
+        if job.snapshot.is_finished:
+            break
+        job.tick()
+    assert job.snapshot.state == "failed"
+    assert 0.0 < job.snapshot.progress < 1.0
+
+
 # --- services.library_service durability ---------------------------------------
 
 
@@ -118,6 +136,25 @@ def test_library_add_does_not_prune_unavailable_rows(tmp_path: Path) -> None:
 
     _add(library, sources, "c")
     assert _persisted_ids(library) == ["a", "b", "c"]
+
+
+def test_library_accepts_generator_tags_in_a_single_pass(tmp_path: Path) -> None:
+    library = AssetLibrary(tmp_path)
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = sources / "a.glb"
+    source.write_bytes(b"fixture")
+    library.add_asset(
+        asset_id="a",
+        prompt="a",
+        provider="mock",
+        model="default",
+        output_format="glb",
+        file_path=source,
+        copy_file=True,
+        tags=(tag for tag in ("Chair", "Wood")),
+    )
+    assert library.list_assets()[0].tags == ["chair", "wood"]
 
 
 def test_library_still_drops_rows_that_escape_the_asset_directory(tmp_path: Path) -> None:

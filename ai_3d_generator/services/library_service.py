@@ -256,7 +256,7 @@ class AssetLibrary:
             format=fmt,
             file=str(source),
             thumbnail=thumbnail,
-            tags=[str(tag).strip().lower()[:64] for tag in tags if str(tag).strip()][:32],
+            tags=tag_values[:32],
             favorite=bool(favorite),
             collection=str(collection).strip()[:128],
         )

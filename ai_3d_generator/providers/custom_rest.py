@@ -7,11 +7,11 @@ its endpoints and response paths.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from ..core.capabilities import ProviderCapabilities
 from ..core.errors import AuthenticationError, ConfigurationError, ProviderResponseError, ValidationError
-from ..core.models import JobHandle, JobStatus, ProviderConfig
+from ..core.models import JobHandle, JobStatus
 from ..utils.paths import endpoint_for_job, join_endpoint
 from ..utils.validation import (
     extract_error,
