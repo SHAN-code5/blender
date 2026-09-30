@@ -47,6 +47,30 @@
 - Deleting a missing batch job now reports an error instead of failing silently.
 - Removed unused imports across the package and test suite.
 
+### Fixed (code audit — generation, batch, library)
+
+- Batch jobs use the shared `start_generation` helper directly instead of calling
+  the `ai3d.generate` operator from a timer context, where the operator poll
+  always failed; queued batch items now actually start and complete.
+- Generation callbacks resolve the live `bpy.context` at callback time instead of
+  closing over the operator context, which could be freed or point at a
+  different scene when the timer fired.
+- `remove_tiny_objects` no longer crashes: it dropped a duplicate `.length` call
+  on an already-scalar value and touched removed objects afterwards. Tiny meshes
+  are now actually removed and remaining passes only see live objects.
+- A corrupt, unparseable, or unknown-schema `metadata.json` can no longer be
+  silently rewritten to an empty library by the next add/update/remove; the
+  mutation is refused and the on-disk file is left untouched.
+- Library asset IDs now sanitize provider and job identifiers (colons, slashes,
+  spaces) into the allowed `[A-Za-z0-9._-]` alphabet so recording a valid
+  provider job cannot silently fail validation.
+- `JobManager.start()` resets the previous job's handle, download, and output URL
+  state, so a reused manager instance cannot inherit a stale completed job.
+- A raising UI update/finish callback no longer flips an already-completed job
+  back to failed; callbacks are isolated from the state machine.
+- The preferences provider enum now uses an explicit integer default (the mock
+  provider), consistent with the scene settings enum.
+
 ## 0.2.0 — Workspace
 
 ### Added

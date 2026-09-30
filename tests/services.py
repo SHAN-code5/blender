@@ -128,3 +128,54 @@ def checkCapabilityFlagsCannotDisagreeWithModes() -> None:
 
 def checkDetectFormatPrefersUrlExtension():
     assert detect_format("https://cdn.example.test/download", "glb") == "glb"
+
+
+def checkJobManagerStartResetsPreviousJob(tmp_path):
+    provider = MockProvider()
+    manager = DownloadManager(tmp_path)
+    job = JobManager(provider, manager, job_timeout=30)
+    job.start({"prompt": "chair", "output_format": "glb", "quality": "draft"})
+    for _ in range(6):
+        if job.snapshot.is_finished:
+            break
+        job.tick()
+    assert job.snapshot.state == "completed"
+    assert job.handle is not None
+    assert job.downloaded is not None
+    # A reused instance must not inherit the finished job's handle/output.
+    job.start({"prompt": "chair", "output_format": "glb", "quality": "draft"})
+    assert job.handle is None
+    assert job.downloaded is None
+    assert job.snapshot.job_id == ""
+
+
+def checkRaisingUiUpdateCallbackDoesNotFlipCompletedToFailed(tmp_path):
+    provider = MockProvider()
+
+    def on_update(snapshot):
+        raise RuntimeError("ui update boom")
+
+    manager = DownloadManager(tmp_path)
+    job = JobManager(provider, manager, job_timeout=30, on_update=on_update)
+    job.start({"prompt": "chair", "output_format": "glb", "quality": "draft"})
+    for _ in range(6):
+        if job.snapshot.is_finished:
+            break
+        job.tick()
+    assert job.snapshot.state == "completed"
+
+
+def checkRaisingFinishedUiCallbackDoesNotFlipCompletedToFailed(tmp_path):
+    provider = MockProvider()
+
+    def on_finished(result, snapshot):
+        raise RuntimeError("ui finished boom")
+
+    manager = DownloadManager(tmp_path)
+    job = JobManager(provider, manager, job_timeout=30, on_finished=on_finished)
+    job.start({"prompt": "chair", "output_format": "glb", "quality": "draft"})
+    for _ in range(6):
+        if job.snapshot.is_finished:
+            break
+        job.tick()
+    assert job.snapshot.state == "completed"

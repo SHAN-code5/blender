@@ -95,6 +95,12 @@ class JobManager:
         self._request = dict(request)
         self._cancel_requested = False
         self._finished_notified = False
+        # A reused instance must not inherit the previous job's handle, asset,
+        # or output URL, which would let a stale guard pass in _download().
+        self.handle = None
+        self.downloaded = None
+        self._output_url = ""
+        self._output_format = ""
         self.snapshot = JobSnapshot(
             state=STATUS_SUBMITTING,
             progress=0.02,
@@ -210,7 +216,12 @@ class JobManager:
         if output_path:
             self.snapshot.output_path = output_path
         if self.on_update:
-            self.on_update(self.snapshot)
+            try:
+                self.on_update(self.snapshot)
+            except Exception:
+                # A raising UI callback must never flip the job state machine.
+                # The snapshot is the source of truth and refreshes on tick.
+                pass
 
     def _finish_error(self, state: str, message: str, detail: str = "") -> None:
         from ..utils.validation import safe_provider_error, safe_provider_message
@@ -227,7 +238,12 @@ class JobManager:
             return
         self._finished_notified = True
         if self.on_finished:
-            self.on_finished(result, self.snapshot)
+            try:
+                self.on_finished(result, self.snapshot)
+            except Exception:
+                # Same reason as _update: a UI callback failure must not
+                # overwrite an already-COMPLETED snapshot with FAILED.
+                pass
 
     def _finish_cancelled(self) -> None:
         self._update(STATUS_CANCELLED, self.snapshot.progress, "Generation cancelled.")
