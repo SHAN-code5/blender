@@ -1,4 +1,4 @@
-"""Phase 3 storage and library migration tests."""
+"""Storage and library migration tests."""
 from __future__ import annotations
 
 from pathlib import Path

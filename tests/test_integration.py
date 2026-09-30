@@ -1,4 +1,4 @@
-"""Phase 3 integration regressions for modes, libraries, and persistence."""
+"""Integration regressions for modes, libraries, and persistence."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -114,7 +114,7 @@ def test_custom_rest_does_not_send_local_image_path_to_remote(tmp_path: Path):
     assert captured["prompt"] == "chair"
 
 
-def test_generation_request_round_trip_preserves_phase3_fields():
+def test_generation_request_round_trip_preserves_extended_fields():
     request = GenerationRequest(prompt="chair", generation_mode="image_to_3d", image_path="/tmp/ref.png", texture_resolution=4096, auto_uv=True)
     restored = GenerationRequest.from_dict(request.to_dict())
     assert restored.generation_mode == "image_to_3d"
@@ -124,7 +124,7 @@ def test_generation_request_round_trip_preserves_phase3_fields():
     assert restored.auto_uv is True
 
 
-def test_history_preserves_phase3_request_fields():
+def test_history_preserves_extended_fields():
     from ai_3d_generator.services.history import make_entry, read_history, write_history
 
     with tempfile.TemporaryDirectory() as temp_dir:

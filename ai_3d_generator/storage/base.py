@@ -1,4 +1,4 @@
-"""Replaceable storage interfaces for Phase 3 metadata."""
+"""Replaceable storage interfaces for asset metadata."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

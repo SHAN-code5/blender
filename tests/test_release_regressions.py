@@ -1,4 +1,4 @@
-"""Focused release-boundary regressions for the Phase 3 extension."""
+"""Focused release-boundary regressions for the extension."""
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

@@ -6,4 +6,5 @@ venv/
 .env
 .env.*
 *.log
+*.zip
 .DS_Store

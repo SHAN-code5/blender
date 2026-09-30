@@ -28,7 +28,7 @@ from ..services.job_manager import JobManager, JobSnapshot
 from ..services.download_manager import DownloadManager
 from ..utils.files import ensure_directory
 from .runtime import _default_cache, get_preferences, provider_config_from_preferences
-from .runtime_phase3 import load_reference_preview, provider_capabilities
+from .runtime_workspace import load_reference_preview, provider_capabilities
 from ..utils.validation import safe_provider_message
 
 
@@ -497,7 +497,7 @@ def _record_completed_asset(context: Any, result: Any, request: GenerationReques
     props = _scene_props(context)
     try:
         from ..services.library_record_service import record_generated_asset
-        from .runtime_phase3 import library_for_props
+        from .runtime_workspace import library_for_props
 
         record_generated_asset(
             library_for_props(props, context),
@@ -561,7 +561,7 @@ def _on_finished(context: Any, result: Any, snapshot: JobSnapshot) -> None:
         COORDINATOR.job = None
         COORDINATOR.request = None
     try:
-        from .operators_phase3 import on_generation_finished
+        from .operators_workspace import on_generation_finished
         on_generation_finished(context, result)
     except Exception as exc:
         props.status = "Generation finished, but batch state could not be updated."

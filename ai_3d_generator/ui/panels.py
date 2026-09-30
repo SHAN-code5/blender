@@ -1,4 +1,4 @@
-"""Blender 3D View workspace panels with honest Phase 3 sections."""
+"""Blender 3D View workspace panels."""
 from __future__ import annotations
 
 from typing import Any
@@ -6,8 +6,8 @@ from typing import Any
 import bpy
 from bpy.types import Panel
 
-from .runtime_phase3 import library_for_props
-from .operators_phase3 import BATCH
+from .runtime_workspace import library_for_props
+from .operators_workspace import BATCH
 
 
 class _SectionHeader:

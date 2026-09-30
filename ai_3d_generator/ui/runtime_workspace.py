@@ -1,4 +1,4 @@
-"""Phase 3 UI runtime helpers: capabilities, image loading, and library access."""
+"""Workspace UI runtime helpers: capabilities, image loading, and library access."""
 from __future__ import annotations
 
 from pathlib import Path
