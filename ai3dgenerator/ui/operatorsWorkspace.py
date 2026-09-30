@@ -13,7 +13,7 @@ from ..core.errors import AI3DError, ValidationError
 from ..services.batchService import BatchQueue
 from ..services.exportManager import export_objects
 from ..services.promptService import PromptEnhancer
-from .operators import COORDINATOR, _import_downloaded, _scene_props
+from .operators import COORDINATOR, _import_downloaded, _scene_props, start_generation
 from .runtimeWorkspace import library_for_props
 
 
@@ -455,10 +455,10 @@ def _batch_tick() -> Optional[float]:
     props.enhance_prompt = False
     props.enhanced_prompt = ""
     props.prompt_enhanced = False
-    result = bpy.ops.ai3d.generate()
+    result = start_generation(props, bpy.context)
     BATCH.timer = None
     if result != {'FINISHED'}:
-        BATCH.queue.fail(job_id, "Generation operator did not start.")
+        BATCH.queue.fail(job_id, "Generation did not start.")
         props.batch_current_job_id = ""
         BATCH.active_job_id = ""
         BATCH.timer = bpy.app.timers.register(_batch_tick, first_interval=0.2)

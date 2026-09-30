@@ -90,6 +90,10 @@ class AssetLibrary:
         self.previews_dir = (self.root / "previews").resolve()
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.previews_dir.mkdir(parents=True, exist_ok=True)
+        # Tracks whether the most recent read of metadata.json could not be
+        # parsed; mutating writes are refused on that state so one corrupt
+        # file plus one mutation cannot silently wipe every asset record.
+        self._unreadable = False
 
     @staticmethod
     def _validate_contained_path(value: str, root: Path, label: str) -> Path:
@@ -157,13 +161,16 @@ class AssetLibrary:
         return self._read_rows(require_files=False)
 
     def _read_rows(self, *, require_files: bool) -> List[AssetMetadata]:
+        self._unreadable = False
         if not self.metadata_path.exists():
             return []
         try:
             value = json.loads(self.metadata_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            self._unreadable = True
             return []
         if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION or not isinstance(value.get("assets"), list):
+            self._unreadable = True
             return []
         result: List[AssetMetadata] = []
         for row in value["assets"][-MAX_ASSETS:]:
@@ -298,6 +305,8 @@ class AssetLibrary:
         return True
 
     def _write(self, rows: List[AssetMetadata]) -> None:
+        if self._unreadable:
+            raise ValidationError("Library metadata could not be read; refusing to overwrite it. Repair or remove metadata.json first.")
         payload = {"schema_version": SCHEMA_VERSION, "assets": [row.to_dict() for row in rows[-MAX_ASSETS:]]}
         atomic_write_bytes(self.metadata_path, json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"))
 

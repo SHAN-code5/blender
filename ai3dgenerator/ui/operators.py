@@ -202,6 +202,73 @@ def _add_history(context: Any, job_id: str, request: GenerationRequest, file_pat
         _set_history_row(row, item)
 
 
+def start_generation(props: Any, context: Any, *, report=None) -> set[str]:
+    """Submit a generation job, callable from the operator or the batch timer.
+
+    ``report`` is an optional ``callable(message)`` used to surface user-facing
+    errors; the operator passes ``self.report({'ERROR'}, ...)`` and the batch
+    timer passes ``None`` so the failing queue item is marked instead.
+    """
+    try:
+        _validate_props(props, context)
+        request = _request_from_props(props)
+        provider_cls = get_provider_class(props.provider)
+        provider_url = _provider_url_from_context(context, props)
+        # The offline mock adapter never needs a configured URL.
+        if not provider_url and props.provider == "mock":
+            provider_url = "http://127.0.0.1:8000"
+        config = _runtime_config(context, props)
+        if not str(config.base_url or "").strip() and str(getattr(props, "provider", "mock") or "mock") == "mock":
+            config.base_url = provider_url
+        capabilities = provider_capabilities(props.provider, config)
+        requested_mode = props.generation_mode
+        if not provider_url:
+            raise AI3DError("Configure the provider URL in Preferences before generating.")
+        if provider_url != str(config.base_url or "").strip():
+            raise AI3DError("The runtime provider configuration does not match Preferences. Reopen Preferences and save the provider URL.")
+        if requested_mode not in capabilities.supported_generation_modes or not capabilities.supports_generation_mode(requested_mode):
+            raise AI3DError("The selected provider does not support this generation mode.")
+        if props.output_format.lower() not in capabilities.supported_formats_for_mode(requested_mode):
+            raise AI3DError("The selected provider does not support the requested output format.")
+        if requested_mode == "imageTo3d":
+            if not props.image_path:
+                raise AI3DError("Select a reference image first.")
+            load_reference_preview(props.image_path, context)
+        provider = provider_cls(config)
+        manager = DownloadManager(
+            _cache_dir(props, context),
+            timeout=props.timeout,
+            max_size_mb=props.max_asset_size_mb,
+            allowed_hosts=config.download_host_allowlist,
+        )
+        COORDINATOR.request = request.to_dict()
+        COORDINATOR.finished = False
+        COORDINATOR.log_path = _cache_dir(props, context) / "logs" / "ai3d.log"
+        get_logger(COORDINATOR.log_path, debug=props.debug_mode)
+        COORDINATOR.job = JobManager(
+            provider,
+            manager,
+            job_timeout=props.job_timeout,
+            on_update=lambda snapshot: _on_update(snapshot),
+            on_finished=lambda result, snapshot: _on_finished(result, snapshot),
+        )
+        COORDINATOR.job.poll_interval = max(0.1, float(props.poll_interval or 1.0))
+        COORDINATOR.job.start(COORDINATOR.request)
+        props.timer_running = not COORDINATOR.job.snapshot.is_finished
+        if props.timer_running:
+            props.status = COORDINATOR.job.snapshot.message
+            # Use the clamped job interval, not the raw Scene value.
+            COORDINATOR.timer = bpy.app.timers.register(_timer_callback, first_interval=COORDINATOR.job.poll_interval)
+        return {'FINISHED'}
+    except (AI3DError, ValueError, OSError) as exc:
+        message = exc.user_message() if isinstance(exc, AI3DError) else str(exc)
+        props.status = "Generation failed."
+        props.error_message = message
+        if report is not None:
+            report(message)
+        return {'CANCELLED'}
+
+
 class AI3D_OT_generate(Operator):
     bl_idname = "ai3d.generate"
     bl_label = "Generate 3D"
@@ -213,64 +280,7 @@ class AI3D_OT_generate(Operator):
         if props.timer_running:
             self.report({'WARNING'}, "A generation job is already running.")
             return {'CANCELLED'}
-        try:
-            _validate_props(props, context)
-            request = _request_from_props(props)
-            provider_cls = get_provider_class(props.provider)
-            provider_url = _provider_url_from_context(context, props)
-            # The offline mock adapter never needs a configured URL.
-            if not provider_url and props.provider == "mock":
-                provider_url = "http://127.0.0.1:8000"
-            config = _runtime_config(context, props)
-            if not str(config.base_url or "").strip() and str(getattr(props, "provider", "mock") or "mock") == "mock":
-                config.base_url = provider_url
-            capabilities = provider_capabilities(props.provider, config)
-            requested_mode = props.generation_mode
-            if not provider_url:
-                raise AI3DError("Configure the provider URL in Preferences before generating.")
-            if provider_url != str(config.base_url or "").strip():
-                raise AI3DError("The runtime provider configuration does not match Preferences. Reopen Preferences and save the provider URL.")
-            if requested_mode not in capabilities.supported_generation_modes or not capabilities.supports_generation_mode(requested_mode):
-                raise AI3DError("The selected provider does not support this generation mode.")
-            if props.output_format.lower() not in capabilities.supported_formats_for_mode(requested_mode):
-                raise AI3DError("The selected provider does not support the requested output format.")
-            if requested_mode == "imageTo3d":
-                if not props.image_path:
-                    self.report({'ERROR'}, "Select a reference image first.")
-                    return {'CANCELLED'}
-                load_reference_preview(props.image_path, context)
-            provider = provider_cls(config)
-            manager = DownloadManager(
-                _cache_dir(props, context),
-                timeout=props.timeout,
-                max_size_mb=props.max_asset_size_mb,
-                allowed_hosts=config.download_host_allowlist,
-            )
-            COORDINATOR.request = request.to_dict()
-            COORDINATOR.finished = False
-            COORDINATOR.log_path = _cache_dir(props, context) / "logs" / "ai3d.log"
-            get_logger(COORDINATOR.log_path, debug=props.debug_mode)
-            COORDINATOR.job = JobManager(
-                provider,
-                manager,
-                job_timeout=props.job_timeout,
-                on_update=lambda snapshot: _on_update(context, snapshot),
-                on_finished=lambda result, snapshot: _on_finished(context, result, snapshot),
-            )
-            COORDINATOR.job.poll_interval = max(0.1, float(props.poll_interval or 1.0))
-            COORDINATOR.job.start(COORDINATOR.request)
-            props.timer_running = not COORDINATOR.job.snapshot.is_finished
-            if props.timer_running:
-                props.status = COORDINATOR.job.snapshot.message
-                # Use the clamped job interval, not the raw Scene value.
-                COORDINATOR.timer = bpy.app.timers.register(_timer_callback, first_interval=COORDINATOR.job.poll_interval)
-            return {'FINISHED'}
-        except (AI3DError, ValueError, OSError) as exc:
-            message = exc.user_message() if isinstance(exc, AI3DError) else str(exc)
-            props.status = "Generation failed."
-            props.error_message = message
-            self.report({'ERROR'}, message)
-            return {'CANCELLED'}
+        return start_generation(props, context, report=lambda message: self.report({'ERROR'}, message))
 
 
 class AI3D_OT_cancel(Operator):
@@ -514,17 +524,25 @@ def _record_completed_asset(context: Any, result: Any, request: GenerationReques
         props.error_message = safe_provider_message(f"Asset downloaded, but library recording failed: {exc}", "Asset downloaded, but library recording failed.")
 
 
-def _on_update(context: Any, snapshot: JobSnapshot) -> None:
+def _on_update(snapshot: JobSnapshot) -> None:
+    # Resolve the context at callback time instead of closing over the
+    # operator-level context from ``execute``, which may be freed or point at a
+    # different scene by the time the timer fires.
+    context = bpy.context
     props = _scene_props(context)
     _set_runtime_state(props, snapshot)
-    if context.area:
-        context.area.tag_redraw()
+    try:
+        if context.area:
+            context.area.tag_redraw()
+    except Exception:
+        pass
 
 
-def _on_finished(context: Any, result: Any, snapshot: JobSnapshot) -> None:
+def _on_finished(result: Any, snapshot: JobSnapshot) -> None:
     if COORDINATOR.finished:
         return
     COORDINATOR.finished = True
+    context = bpy.context
     props = _scene_props(context)
     _set_runtime_state(props, snapshot, terminal=True)
     try:
