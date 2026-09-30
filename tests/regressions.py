@@ -9,55 +9,55 @@ from threading import Thread
 
 import pytest
 
-from ai_3d_generator.core import config
-from ai_3d_generator.core.errors import DownloadError, ProviderResponseError, ValidationError
-from ai_3d_generator.core.models import GenerationRequest, ProviderConfig
-from ai_3d_generator.providers.custom_rest import CustomRESTProvider
-from ai_3d_generator.providers.mock import MockProvider
-from ai_3d_generator.services.download_manager import DownloadManager, detect_format, validate_asset_file
-from ai_3d_generator.services.history import make_entry, read_history, write_history
-from ai_3d_generator.services.job_manager import JobManager
-from ai_3d_generator.services.library_service import AssetLibrary
-from ai_3d_generator.utils import files, validation
-from ai_3d_generator.utils.http import HttpClient, HttpResponse
-from ai_3d_generator.utils.paths import join_endpoint
+from ai3dgenerator.core import config
+from ai3dgenerator.core.errors import DownloadError, ProviderResponseError, ValidationError
+from ai3dgenerator.core.models import GenerationRequest, ProviderConfig
+from ai3dgenerator.providers.customRest import CustomRESTProvider
+from ai3dgenerator.providers.mock import MockProvider
+from ai3dgenerator.services.downloadManager import DownloadManager, detect_format, validate_asset_file
+from ai3dgenerator.services.history import make_entry, read_history, write_history
+from ai3dgenerator.services.jobManager import JobManager
+from ai3dgenerator.services.libraryService import AssetLibrary
+from ai3dgenerator.utils import files, validation
+from ai3dgenerator.utils.http import HttpClient, HttpResponse
+from ai3dgenerator.utils.paths import join_endpoint
 
 
-def test_custom_provider_validates_url_before_network() -> None:
+def checkCustomProviderValidatesUrlBeforeNetwork() -> None:
     provider = CustomRESTProvider(ProviderConfig(base_url="file:///tmp/service", requires_api_key=False))
     with pytest.raises(ValidationError):
         provider.validate_credentials()
 
 
-def test_custom_provider_requires_key_only_when_configured() -> None:
+def checkCustomProviderRequiresKeyOnlyWhenConfigured() -> None:
     provider = CustomRESTProvider(ProviderConfig(base_url="https://example.test", requires_api_key=True, api_key_env="MISSING_AI3D_TEST_KEY"))
     with pytest.raises(Exception, match="API key"):
         provider.validate_credentials()
 
 
-def test_http_url_rejects_control_characters_and_fragments() -> None:
+def checkHttpUrlRejectsControlCharactersAndFragments() -> None:
     with pytest.raises(ValidationError):
         validation.validate_http_url("https://example.test/\nfile", "URL")
     with pytest.raises(ValidationError):
         validation.validate_http_url("https://example.test/#fragment", "URL")
 
 
-def test_glb_integrity_check_rejects_truncated_file(tmp_path: Path) -> None:
+def checkGlbIntegrityCheckRejectsTruncatedFile(tmp_path: Path) -> None:
     path = tmp_path / "bad.glb"
     path.write_bytes(b"glTF" + (2).to_bytes(4, "little") + (100).to_bytes(4, "little"))
     with pytest.raises(Exception):
         validate_asset_file(path, "glb")
 
 
-def test_visible_history_index_maps_newest_twenty(tmp_path: Path) -> None:
-    from ai_3d_generator.services.history import visible_history_index_to_storage
+def checkVisibleHistoryIndexMapsNewestTwenty(tmp_path: Path) -> None:
+    from ai3dgenerator.services.history import visible_history_index_to_storage
 
     rows = [make_entry(job_id=str(index), prompt="chair", negative_prompt="", provider="mock", model="default", quality="standard", output_format="glb") for index in range(21)]
     assert visible_history_index_to_storage(rows, 0) == 1
     assert visible_history_index_to_storage(rows, 19) == 20
 
 
-def test_history_rejects_malformed_typed_rows(tmp_path: Path) -> None:
+def checkHistoryRejectsMalformedTypedRows(tmp_path: Path) -> None:
     path = tmp_path / "history.json"
     row = {
         "job_id": "bad", "timestamp": "now", "prompt": "chair", "negative_prompt": "",
@@ -68,7 +68,7 @@ def test_history_rejects_malformed_typed_rows(tmp_path: Path) -> None:
     assert read_history(path) == []
 
 
-def test_history_ignores_corrupt_rows_and_stays_secret_free(tmp_path: Path) -> None:
+def checkHistoryIgnoresCorruptRowsAndStaysSecretFree(tmp_path: Path) -> None:
     path = tmp_path / "history.json"
     path.write_text('[{"job_id":"ok","prompt":"chair","provider":"mock","status":"completed"}, "not-an-entry", {"job_id":"bad","prompt":"x","provider":"mock","api_key":"secret","status":"failed"}]', encoding="utf-8")
     entries = read_history(path)
@@ -77,7 +77,7 @@ def test_history_ignores_corrupt_rows_and_stays_secret_free(tmp_path: Path) -> N
     assert "api_key" not in write_history(path, entries).read_text(encoding="utf-8")
 
 
-def test_mock_failure_does_not_complete(tmp_path: Path) -> None:
+def checkMockFailureDoesNotComplete(tmp_path: Path) -> None:
     provider = MockProvider()
     job = provider.create_generation_job({"prompt": "mock-fail chair"})
     assert provider.get_job_status(job.job_id).state == "queued"
@@ -85,17 +85,17 @@ def test_mock_failure_does_not_complete(tmp_path: Path) -> None:
     assert provider.get_job_status(job.job_id).state == "failed"
 
 
-def test_mock_job_cancels_before_submission_callback(tmp_path: Path) -> None:
+def checkMockJobCancelsBeforeSubmissionCallback(tmp_path: Path) -> None:
     provider = MockProvider()
     manager = DownloadManager(tmp_path)
-    job = __import__("ai_3d_generator.services.job_manager", fromlist=["JobManager"]).JobManager(provider, manager)
+    job = __import__("ai3dgenerator.services.jobManager", fromlist=["JobManager"]).JobManager(provider, manager)
     job.start({"prompt": "chair", "output_format": "glb"})
     job.cancel()
     job.tick()
     assert job.snapshot.state == "cancelled"
 
 
-def test_safe_output_path_rejects_symlink_escape(tmp_path: Path) -> None:
+def checkSafeOutputPathRejectsSymlinkEscape(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -108,23 +108,23 @@ def test_safe_output_path_rejects_symlink_escape(tmp_path: Path) -> None:
         files.safe_output_path(root, "job", "../link/asset", "glb")
 
 
-def test_config_rejects_non_finite_timeouts() -> None:
+def checkConfigRejectsNonFiniteTimeouts() -> None:
     cfg = config.default_config()
-    cfg["generation_mode"] = "image_to_3d"
+    cfg["generation_mode"] = "imageTo3d"
     for key in ("timeout", "poll_interval", "job_timeout"):
         bad = config.default_config()
-        bad["generation_mode"] = "image_to_3d"
+        bad["generation_mode"] = "imageTo3d"
         bad[key] = float("nan")
         assert config.validate_config(bad), key
 
 
-def test_config_accepts_mock_without_prompt() -> None:
+def checkConfigAcceptsMockWithoutPrompt() -> None:
     cfg = config.default_config()
-    cfg["generation_mode"] = "image_to_3d"
+    cfg["generation_mode"] = "imageTo3d"
     assert config.validate_config(cfg) == []
 
 
-def test_configured_auth_header_is_not_forwarded_on_redirect() -> None:
+def checkConfiguredAuthHeaderIsNotForwardedOnRedirect() -> None:
     """A provider-specific auth header is dropped along with standard auth."""
     seen = []
     target = {}
@@ -167,7 +167,7 @@ def test_configured_auth_header_is_not_forwarded_on_redirect() -> None:
         target_server.server_close()
 
 
-def test_auth_headers_are_dropped_on_redirect() -> None:
+def checkAuthHeadersAreDroppedOnRedirect() -> None:
     """Standard auth headers are dropped when a request is redirected."""
     seen = []
     target_url = {}
@@ -209,7 +209,7 @@ def test_auth_headers_are_dropped_on_redirect() -> None:
             thread.join(timeout=2)
 
 
-def test_download_allowlist_rejects_redirected_host(tmp_path: Path) -> None:
+def checkDownloadAllowlistRejectsRedirectedHost(tmp_path: Path) -> None:
     """A redirect cannot escape the explicitly configured download host."""
 
     class Handler(BaseHTTPRequestHandler):
@@ -222,7 +222,7 @@ def test_download_allowlist_rejects_redirected_host(tmp_path: Path) -> None:
             self.send_response(200)
             self.send_header("Content-Type", "model/gltf-binary")
             self.end_headers()
-            self.wfile.write((Path(__file__).parent.parent / "ai_3d_generator/fixtures/mock_asset.glb").read_bytes())
+            self.wfile.write((Path(__file__).parent.parent / "ai3dgenerator/fixtures/mockAsset.glb").read_bytes())
 
         def log_message(self, *_args):
             return
@@ -252,7 +252,7 @@ def test_download_allowlist_rejects_redirected_host(tmp_path: Path) -> None:
         target_thread.join(timeout=2)
 
 
-def test_custom_provider_rejects_cross_origin_endpoints() -> None:
+def checkCustomProviderRejectsCrossOriginEndpoints() -> None:
     with pytest.raises(Exception):
         CustomRESTProvider(
             ProviderConfig(base_url="https://api.example.test", generate_path="https://evil.example.test/generate")
@@ -263,16 +263,16 @@ def test_custom_provider_rejects_cross_origin_endpoints() -> None:
         ).validate_credentials()
 
 
-def test_endpoint_template_cannot_escape_configured_provider_host() -> None:
+def checkEndpointTemplateCannotEscapeConfiguredProviderHost() -> None:
     with pytest.raises(ValidationError):
         join_endpoint("https://api.example.test/root", "https://evil.api.example.test/x")
     with pytest.raises(ValidationError):
         join_endpoint("https://api.example.test/root", "http://169.254.169.254/latest/meta-data")
 
 
-def test_validate_config_always_returns_a_list_and_flags_unknown_provider() -> None:
+def checkValidateConfigAlwaysReturnsAListAndFlagsUnknownProvider() -> None:
     base = {
-        "generation_mode": "image_to_3d",
+        "generation_mode": "imageTo3d",
         "timeout": 60.0,
         "poll_interval": 2.0,
         "job_timeout": 900.0,
@@ -283,12 +283,12 @@ def test_validate_config_always_returns_a_list_and_flags_unknown_provider() -> N
     assert isinstance(missing, list) and any("provider" in error.lower() for error in missing)
 
 
-def test_content_disposition_preserves_filename_case() -> None:
+def checkContentDispositionPreservesFilenameCase() -> None:
     assert files.format_content_disposition('attachment; FileName="MyAsset.GLB"') == "MyAsset.GLB"
     assert files.format_content_disposition("inline") is None
 
 
-def test_download_manager_does_not_widen_supplied_client_redirect_policy(tmp_path: Path) -> None:
+def checkDownloadManagerDoesNotWidenSuppliedClientRedirectPolicy(tmp_path: Path) -> None:
     calls = []
 
     class _Client:
@@ -304,23 +304,23 @@ def test_download_manager_does_not_widen_supplied_client_redirect_policy(tmp_pat
 # --- utils.paths.join_endpoint -------------------------------------------------
 
 
-def test_join_endpoint_preserves_configured_base_path() -> None:
+def checkJoinEndpointPreservesConfiguredBasePath() -> None:
     assert join_endpoint("https://api.example.test/v1", "/generate") == "https://api.example.test/v1/generate"
     assert join_endpoint("https://api.example.test/v1/", "/jobs/abc") == "https://api.example.test/v1/jobs/abc"
     assert join_endpoint("https://api.example.test", "/generate") == "https://api.example.test/generate"
 
 
-def test_join_endpoint_still_rejects_cross_origin_targets() -> None:
+def checkJoinEndpointStillRejectsCrossOriginTargets() -> None:
     with pytest.raises(ValidationError):
         join_endpoint("https://api.example.test/v1", "https://evil.example.test/generate")
     with pytest.raises(ValidationError):
         join_endpoint("https://api.example.test/v1", "http://169.254.169.254/latest")
 
 
-# --- services.download_manager.detect_format -----------------------------------
+# --- services.downloadManager.detect_format -----------------------------------
 
 
-def test_detect_format_falls_back_when_url_suffix_is_not_an_asset() -> None:
+def checkDetectFormatFallsBackWhenUrlSuffixIsNotAnAsset() -> None:
     assert detect_format("https://cdn.example.test/download.php", "glb", "model/gltf-binary") == "glb"
     assert detect_format("https://cdn.example.test/download.php", "glb") == "glb"
     assert detect_format("https://cdn.example.test/result?id=1", "", "model/gltf-binary") == "glb"
@@ -329,7 +329,7 @@ def test_detect_format_falls_back_when_url_suffix_is_not_an_asset() -> None:
         detect_format("https://cdn.example.test/download.php", "")
 
 
-def test_download_manager_accepts_non_asset_url_suffix(tmp_path: Path) -> None:
+def checkDownloadManagerAcceptsNonAssetUrlSuffix(tmp_path: Path) -> None:
     body = b"glTF" + (2).to_bytes(4, "little") + (12).to_bytes(4, "little")
 
     class Client:
@@ -347,10 +347,10 @@ def test_download_manager_accepts_non_asset_url_suffix(tmp_path: Path) -> None:
     assert asset.path.is_file()
 
 
-# --- services.job_manager terminal progress ------------------------------------
+# --- services.jobManager terminal progress ------------------------------------
 
 
-def test_failed_job_does_not_report_full_progress(tmp_path: Path) -> None:
+def checkFailedJobDoesNotReportFullProgress(tmp_path: Path) -> None:
     provider = MockProvider()
     job = JobManager(provider, DownloadManager(tmp_path))
     job.start(GenerationRequest(prompt="mock-fail chair").to_dict())
@@ -362,15 +362,15 @@ def test_failed_job_does_not_report_full_progress(tmp_path: Path) -> None:
     assert 0.0 < job.snapshot.progress < 1.0
 
 
-# --- services.library_service durability ---------------------------------------
+# --- services.libraryService durability ---------------------------------------
 
 
-def _persisted_ids(library: AssetLibrary) -> list[str]:
+def persistedIds(library: AssetLibrary) -> list[str]:
     payload = json.loads(library.metadata_path.read_text(encoding="utf-8"))
     return sorted(row["id"] for row in payload["assets"])
 
 
-def _add_library_asset(library: AssetLibrary, source_dir: Path, asset_id: str) -> None:
+def addLibraryAsset(library: AssetLibrary, source_dir: Path, asset_id: str) -> None:
     source = source_dir / f"{asset_id}.glb"
     source.write_bytes(b"fixture")
     library.add_asset(
@@ -384,12 +384,12 @@ def _add_library_asset(library: AssetLibrary, source_dir: Path, asset_id: str) -
     )
 
 
-def test_library_keeps_metadata_when_file_is_temporarily_unavailable(tmp_path: Path) -> None:
+def checkLibraryKeepsMetadataWhenFileIsTemporarilyUnavailable(tmp_path: Path) -> None:
     library = AssetLibrary(tmp_path)
     sources = tmp_path / "sources"
     sources.mkdir()
-    _add_library_asset(library, sources, "a")
-    _add_library_asset(library, sources, "b")
+    addLibraryAsset(library, sources, "a")
+    addLibraryAsset(library, sources, "b")
 
     a_path = next(entry.file for entry in library.list_assets() if entry.id == "a")
     Path(a_path).rename(a_path + ".away")
@@ -399,31 +399,31 @@ def test_library_keeps_metadata_when_file_is_temporarily_unavailable(tmp_path: P
 
     # ...but an unrelated write must not permanently prune its metadata.
     library.update("b", favorite=True)
-    assert _persisted_ids(library) == ["a", "b"]
+    assert persistedIds(library) == ["a", "b"]
 
-    _add_library_asset(library, sources, "d")
-    assert _persisted_ids(library) == ["a", "b", "d"]
+    addLibraryAsset(library, sources, "d")
+    assert persistedIds(library) == ["a", "b", "d"]
 
     # Once the file is back, the record reappears.
     Path(a_path + ".away").rename(a_path)
     assert sorted(entry.id for entry in library.list_assets()) == ["a", "b", "d"]
 
 
-def test_library_add_does_not_prune_unavailable_rows(tmp_path: Path) -> None:
+def checkLibraryAddDoesNotPruneUnavailableRows(tmp_path: Path) -> None:
     library = AssetLibrary(tmp_path)
     sources = tmp_path / "sources"
     sources.mkdir()
-    _add_library_asset(library, sources, "a")
-    _add_library_asset(library, sources, "b")
+    addLibraryAsset(library, sources, "a")
+    addLibraryAsset(library, sources, "b")
 
     a_path = next(entry.file for entry in library.list_assets() if entry.id == "a")
     Path(a_path).rename(a_path + ".away")
 
-    _add_library_asset(library, sources, "c")
-    assert _persisted_ids(library) == ["a", "b", "c"]
+    addLibraryAsset(library, sources, "c")
+    assert persistedIds(library) == ["a", "b", "c"]
 
 
-def test_library_accepts_generator_tags_in_a_single_pass(tmp_path: Path) -> None:
+def checkLibraryAcceptsGeneratorTagsInASinglePass(tmp_path: Path) -> None:
     library = AssetLibrary(tmp_path)
     sources = tmp_path / "sources"
     sources.mkdir()
@@ -442,11 +442,11 @@ def test_library_accepts_generator_tags_in_a_single_pass(tmp_path: Path) -> None
     assert library.list_assets()[0].tags == ["chair", "wood"]
 
 
-def test_library_still_drops_rows_that_escape_the_asset_directory(tmp_path: Path) -> None:
+def checkLibraryStillDropsRowsThatEscapeTheAssetDirectory(tmp_path: Path) -> None:
     library = AssetLibrary(tmp_path)
     sources = tmp_path / "sources"
     sources.mkdir()
-    _add_library_asset(library, sources, "valid")
+    addLibraryAsset(library, sources, "valid")
 
     external = tmp_path / "external.glb"
     external.write_bytes(b"external")
@@ -478,5 +478,5 @@ def test_library_still_drops_rows_that_escape_the_asset_directory(tmp_path: Path
     library.metadata_path.write_text(json.dumps(payload), encoding="utf-8")
 
     library.update("valid", favorite=True)
-    assert _persisted_ids(library) == ["valid"]
+    assert persistedIds(library) == ["valid"]
     assert [entry.id for entry in library.list_assets()] == ["valid"]

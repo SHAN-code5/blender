@@ -1,6 +1,6 @@
 # AI 3D Object Generator — development notes
 
-The package source directory is `ai_3d_generator/`, not the repository root.
+The package source directory is `ai3dgenerator/`, not the repository root.
 The manifest and `__init__.py` intentionally live in the same directory, as
 required by Blender's extension package builder.
 
@@ -33,19 +33,19 @@ export, thumbnail, and optimization modules. Worker code never touches
 
 - `core/capabilities.py` is the source of truth for supported modes and formats.
   Mode checks require both the declared mode and its feature flag.
-- `services/library_service.py` provides bounded atomic JSON metadata storage.
+- `services/libraryService.py` provides bounded atomic JSON metadata storage.
   Generated assets can be copied into the library's `generated/` directory so
   deleting a transient cache does not orphan a library record.
-- `services/library_record_service.py` is called by the generation completion
+- `services/libraryRecordService.py` is called by the generation completion
   callback after a successful download.
-- `services/batch_service.py` is a replaceable pure-Python queue; the Blender
+- `services/batchService.py` is a replaceable pure-Python queue; the Blender
   operator layer supplies sequential timer orchestration and user controls.
 - Prompt enhancement is a local template tool. It never calls a model and never
   claims to generate 3D geometry.
-- `providers/image_to_3d.py` is an adapter boundary. `MockProvider` implements
+- `providers/imageTo3d.py` is an adapter boundary. `MockProvider` implements
   it only as a deterministic offline fixture; `CustomRESTProvider` remains
   text-only until a real binary/multipart upload contract exists.
-- `services/thumbnail_service.py` and `services/optimization_service.py` are
+- `services/thumbnailService.py` and `services/optimizationService.py` are
   local foundations. They are not automatically invoked by generation.
 
 ## Security boundaries
@@ -69,15 +69,15 @@ The pure-Python suite is run without Blender. Release verification must be
 performed after the final edit in this order:
 
 ```bash
-python3 -m compileall -q ai_3d_generator tests
+python3 -m compileall -q ai3dgenerator tests
 .venv/bin/pytest -q
-blender --command extension validate ai_3d_generator
-blender --command extension build --source-dir ai_3d_generator --output-dir checks --verbose
-blender --command extension validate checks/ai_3d_generator-<version>.zip
+blender --command extension validate ai3dgenerator
+blender --command extension build --source-dir ai3dgenerator --output-dir checks --verbose
+blender --command extension validate checks/ai3dgenerator-<version>.zip
 blender --factory-startup -b --python checks/registration_probe.py
 blender --factory-startup -b --python checks/registration_probe_twice.py
 ```
 
-The generated `checks/ai_3d_generator-<version>.zip` archive is a build output
+The generated `checks/ai3dgenerator-<version>.zip` archive is a build output
 and is not tracked in git; always rebuild it from the current source before
 release verification.

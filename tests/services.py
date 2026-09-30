@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from ai_3d_generator.core.errors import DownloadError
-from ai_3d_generator.core.capabilities import ProviderCapabilities
-from ai_3d_generator.core.models import ProviderConfig
-from ai_3d_generator.providers.custom_rest import CustomRESTProvider
-from ai_3d_generator.providers.mock import MockProvider
-from ai_3d_generator.services.download_manager import DownloadManager, detect_format
-from ai_3d_generator.services.job_manager import JobManager
+from ai3dgenerator.core.errors import DownloadError
+from ai3dgenerator.core.capabilities import ProviderCapabilities
+from ai3dgenerator.core.models import ProviderConfig
+from ai3dgenerator.providers.customRest import CustomRESTProvider
+from ai3dgenerator.providers.mock import MockProvider
+from ai3dgenerator.services.downloadManager import DownloadManager, detect_format
+from ai3dgenerator.services.jobManager import JobManager
 
 
 class FakeHttpResponse:
@@ -30,14 +30,14 @@ class FakeClient:
         return self.response
 
 
-def test_mock_job_manager_downloads_fixture(tmp_path):
+def checkMockJobManagerDownloadsFixture(tmp_path):
     provider = MockProvider()
     manager = DownloadManager(tmp_path, allowed_hosts=[])
 
     class FixtureDownload(DownloadManager):
         def download(self, url, job_id, requested_format="", provider=None):
             # The manager is replaced to make the fixture path observable while
-            # the real format checks remain covered separately.
+            # the real format checkS remain covered separately.
             return super().download(url, job_id, requested_format, provider)
 
     job = JobManager(provider, FixtureDownload(tmp_path), job_timeout=30)
@@ -54,20 +54,20 @@ def test_mock_job_manager_downloads_fixture(tmp_path):
     assert Path(job.snapshot.output_path).is_file()
 
 
-def test_mock_provider_cancel_is_observable():
+def checkMockProviderCancelIsObservable():
     provider = MockProvider()
     job = provider.create_generation_job({"prompt": "chair"})
     provider.cancel_job(job.job_id)
     assert provider.get_job_status(job.job_id).state == "cancelled"
 
 
-def test_download_manager_rejects_unknown_host_when_allowlist_is_set(tmp_path):
+def checkDownloadManagerRejectsUnknownHostWhenAllowlistIsSet(tmp_path):
     manager = DownloadManager(tmp_path, allowed_hosts=["cdn.example.test"])
     with pytest.raises(DownloadError):
         manager.download("https://evil.example/a.glb", "job-1", "glb")
 
 
-def test_download_manager_rejects_cross_host_authenticated_download(tmp_path):
+def checkDownloadManagerRejectsCrossHostAuthenticatedDownload(tmp_path):
     class Client:
         def request(self, method, url, **kwargs):
             raise AssertionError("network must not be reached")
@@ -78,34 +78,34 @@ def test_download_manager_rejects_cross_host_authenticated_download(tmp_path):
         manager.download("https://cdn.example.test/a.glb", "job-1", "glb", provider)
 
 
-def test_custom_rest_capabilities_are_explicit() -> None:
+def checkCustomRestCapabilitiesAreExplicit() -> None:
     capabilities = CustomRESTProvider().capabilities()
     assert capabilities.supports_generation_mode("text_to_3d")
-    assert not capabilities.supports_generation_mode("image_to_3d")
+    assert not capabilities.supports_generation_mode("imageTo3d")
     assert capabilities.supported_formats == ("glb",)
     assert capabilities.supports_cancellation is True
 
 
-def test_custom_rest_capability_reflects_disabled_cancel_endpoint() -> None:
+def checkCustomRestCapabilityReflectsDisabledCancelEndpoint() -> None:
     capabilities = CustomRESTProvider(ProviderConfig(cancel_path="")).capabilities()
     assert capabilities.supports_cancellation is False
-    assert capabilities.supported_formats_for_mode("image_to_3d") == ()
+    assert capabilities.supported_formats_for_mode("imageTo3d") == ()
 
 
-def test_custom_rest_disabled_cancel_is_not_advertised() -> None:
+def checkCustomRestDisabledCancelIsNotAdvertised() -> None:
     capabilities = CustomRESTProvider(ProviderConfig(cancel_path="")).capabilities()
     assert capabilities.supports_cancellation is False
     with pytest.raises(NotImplementedError):
         CustomRESTProvider(ProviderConfig(cancel_path="")).cancel_job("job-1")
 
 
-def test_capability_flags_cannot_disagree_with_modes() -> None:
+def checkCapabilityFlagsCannotDisagreeWithModes() -> None:
     with pytest.raises(ValueError):
         ProviderCapabilities(
             provider_id="broken",
             name="Broken",
-            supported_generation_modes=("image_to_3d",),
-            supports_image_to_3d=False,
+            supported_generation_modes=("imageTo3d",),
+            supports_imageTo3d=False,
         )
 
     class Client:
@@ -126,5 +126,5 @@ def test_capability_flags_cannot_disagree_with_modes() -> None:
     assert handle.job_id == "abc-1"
 
 
-def test_detect_format_prefers_url_extension():
+def checkDetectFormatPrefersUrlExtension():
     assert detect_format("https://cdn.example.test/download", "glb") == "glb"

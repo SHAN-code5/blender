@@ -7,16 +7,16 @@ import threading
 
 import pytest
 
-from ai_3d_generator.core.capabilities import ProviderCapabilities
-from ai_3d_generator.core.config import validate_config
-from ai_3d_generator.core.errors import NetworkError, ValidationError
-from ai_3d_generator.core.models import ProviderConfig
-from ai_3d_generator.providers.custom_rest import CustomRESTProvider
-from ai_3d_generator.services.history import make_entry, read_history, write_history
-from ai_3d_generator.utils.http import HttpClient
+from ai3dgenerator.core.capabilities import ProviderCapabilities
+from ai3dgenerator.core.config import validate_config
+from ai3dgenerator.core.errors import NetworkError, ValidationError
+from ai3dgenerator.core.models import ProviderConfig
+from ai3dgenerator.providers.customRest import CustomRESTProvider
+from ai3dgenerator.services.history import make_entry, read_history, write_history
+from ai3dgenerator.utils.http import HttpClient
 
 
-def test_capability_flags_must_agree_with_declared_modes() -> None:
+def checkCapabilityFlagsMustAgreeWithDeclaredModes() -> None:
     with pytest.raises(ValueError):
         ProviderCapabilities(
             provider_id="broken",
@@ -28,24 +28,24 @@ def test_capability_flags_must_agree_with_declared_modes() -> None:
         ProviderCapabilities(
             provider_id="broken",
             name="Broken",
-            supported_generation_modes=("image_to_3d",),
-            supports_image_to_3d=False,
+            supported_generation_modes=("imageTo3d",),
+            supports_imageTo3d=False,
         )
 
 
-def test_capability_formats_and_modes_are_restricted() -> None:
+def checkCapabilityFormatsAndModesAreRestricted() -> None:
     with pytest.raises(ValueError):
         ProviderCapabilities(provider_id="broken", name="Broken", supported_formats=("exe",))
     with pytest.raises(ValueError):
         ProviderCapabilities(
             provider_id="broken",
             name="Broken",
-            supported_generation_modes=("image_to_3d",),
+            supported_generation_modes=("imageTo3d",),
             supports_text_to_3d=True,
         )
 
 
-def test_config_rejects_unbounded_timing_values() -> None:
+def checkConfigRejectsUnboundedTimingValues() -> None:
     for key in ("timeout", "poll_interval", "job_timeout"):
         values = validate_config({
             "provider": "mock",
@@ -58,7 +58,7 @@ def test_config_rejects_unbounded_timing_values() -> None:
         assert values, key
 
 
-def test_custom_rest_download_rejects_non_origin_url() -> None:
+def checkCustomRestDownloadRejectsNonOriginUrl() -> None:
     class Client:
         timeout = 60.0
 
@@ -73,7 +73,7 @@ def test_custom_rest_download_rejects_non_origin_url() -> None:
         provider.download_asset("http://api.example.test:8443/asset.glb", Path("/tmp/asset.glb"))
 
 
-def test_history_rejects_external_or_invalid_enum_fields(tmp_path: Path) -> None:
+def checkHistoryRejectsExternalOrInvalidEnumFields(tmp_path: Path) -> None:
     external = tmp_path.parent / "outside.glb"
     external.write_bytes(b"not a glb")
     path = tmp_path / "history.json"
@@ -89,7 +89,7 @@ def test_history_rejects_external_or_invalid_enum_fields(tmp_path: Path) -> None
     assert read_history(path) == []
 
 
-def test_history_migrates_minimal_legacy_row_and_preserves_contained_asset(tmp_path: Path) -> None:
+def checkHistoryMigratesMinimalLegacyRowAndPreservesContainedAsset(tmp_path: Path) -> None:
     history_path = tmp_path / "history.json"
     history_path.write_text(
         '[{"job_id":"legacy","prompt":"chair","provider":"mock","status":"completed"}]',
@@ -122,7 +122,7 @@ def test_history_migrates_minimal_legacy_row_and_preserves_contained_asset(tmp_p
     assert restored[0].file_path == str(asset.resolve())
 
 
-def test_http_redirect_origin_policy_blocks_different_port() -> None:
+def checkHttpRedirectOriginPolicyBlocksDifferentPort() -> None:
     target_url = {}
 
     class Handler(BaseHTTPRequestHandler):
