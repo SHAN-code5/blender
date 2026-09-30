@@ -67,6 +67,12 @@ def _dimensions(obj: Any) -> Any:
     return Vector((obj.dimensions.x, obj.dimensions.y, obj.dimensions.z)).length
 
 
+def _translation_roots(objects: Sequence[Any]) -> list[Any]:
+    """Return top-level members so a parented child is not moved twice."""
+    member_ids = {id(obj) for obj in objects}
+    return [obj for obj in objects if obj.parent is None or id(obj.parent) not in member_ids]
+
+
 def _center_group(objects: Sequence[Any]) -> None:
     from mathutils import Vector
 
@@ -74,7 +80,7 @@ def _center_group(objects: Sequence[Any]) -> None:
     if not points:
         return
     center = sum(points, Vector((0.0, 0.0, 0.0))) / len(points)
-    for obj in objects:
+    for obj in _translation_roots(objects):
         obj.location -= center
 
 

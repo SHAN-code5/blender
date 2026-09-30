@@ -1,5 +1,24 @@
 # Phase 3 Changelog
 
+## Unreleased
+
+### Fixed
+
+- Export no longer includes unrelated objects the user already had selected; the
+  previous selection is restored after the export completes.
+- Asset-library metadata is preserved when an asset file is temporarily
+  unavailable (for example an unmounted drive) instead of being silently pruned
+  by an unrelated write.
+- `join_endpoint` preserves a configured base-URL path prefix when an endpoint
+  uses a leading slash (such as the default `/generate` mapping).
+- Centering a hierarchy no longer moves parented children twice, which distorted
+  multi-object imports.
+- Downloads whose URL has a non-asset suffix (for example `/download.php`) fall
+  back to the response content type or the requested format instead of failing
+  before the request.
+- Dynamic provider and prompt-template enums use integer defaults so the
+  extension registers on Blender 5.x.
+
 ## 0.2.0 — Phase 3 workspace
 
 ### Added

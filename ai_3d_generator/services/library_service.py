@@ -91,17 +91,29 @@ class AssetLibrary:
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.previews_dir.mkdir(parents=True, exist_ok=True)
 
-    def _resolve_contained_file(self, value: str) -> Path:
+    @staticmethod
+    def _validate_contained_path(value: str, root: Path, label: str) -> Path:
+        """Return the resolved path only when it stays inside ``root``.
+
+        Existence is deliberately not required: a record must survive a
+        temporarily unavailable file (unmounted drive, offline share) so an
+        unrelated write cannot silently prune it.
+        """
         path = Path(value).expanduser()
         try:
-            path.relative_to(self.assets_dir)
+            path.relative_to(root)
         except ValueError as exc:
-            raise ValidationError("Library asset path is outside the generated asset directory.") from exc
+            raise ValidationError(f"{label} is outside the library directory.") from exc
         resolved = path.resolve()
         try:
-            resolved.relative_to(self.assets_dir)
+            resolved.relative_to(root)
         except ValueError as exc:
-            raise ValidationError("Library asset path escapes the generated asset directory.") from exc
+            raise ValidationError(f"{label} escapes the library directory.") from exc
+        return resolved
+
+    def _resolve_contained_file(self, value: str) -> Path:
+        path = Path(value).expanduser()
+        resolved = self._validate_contained_path(value, self.assets_dir, "Library asset path")
         if path.is_symlink() or resolved.is_symlink():
             raise ValidationError("Library asset path must be a regular contained file.")
         if not resolved.is_file():
@@ -112,15 +124,7 @@ class AssetLibrary:
         if not str(value or "").strip():
             return ""
         path = Path(value).expanduser()
-        try:
-            path.relative_to(self.previews_dir)
-        except ValueError as exc:
-            raise ValidationError("Library thumbnails must stay in the preview directory.") from exc
-        resolved = path.resolve()
-        try:
-            resolved.relative_to(self.previews_dir)
-        except ValueError as exc:
-            raise ValidationError("Library thumbnail path escapes the preview directory.") from exc
+        resolved = self._validate_contained_path(value, self.previews_dir, "Library thumbnail path")
         if path.is_symlink() or resolved.is_symlink():
             raise ValidationError("Library thumbnail path must be a regular contained file.")
         if not resolved.is_file():
@@ -140,6 +144,19 @@ class AssetLibrary:
         return self._resolve_contained_file(value)
 
     def list_assets(self) -> List[AssetMetadata]:
+        """Return display-ready assets whose files are currently available."""
+        return self._read_rows(require_files=True)
+
+    def _rows_for_update(self) -> List[AssetMetadata]:
+        """Return every structurally valid row, including unavailable files.
+
+        Mutating operations must rewrite this full set. Using the display list
+        would silently discard the metadata of any asset whose file happens to
+        be missing at that moment (for example an unmounted external drive).
+        """
+        return self._read_rows(require_files=False)
+
+    def _read_rows(self, *, require_files: bool) -> List[AssetMetadata]:
         if not self.metadata_path.exists():
             return []
         try:
@@ -152,9 +169,17 @@ class AssetLibrary:
         for row in value["assets"][-MAX_ASSETS:]:
             try:
                 entry = AssetMetadata.from_dict(row)
-                self._resolve_contained_file(entry.file)
-                if entry.thumbnail and not self._thumbnail_exists(entry.thumbnail):
-                    continue
+                if require_files:
+                    self._resolve_contained_file(entry.file)
+                    if entry.thumbnail and not self._thumbnail_exists(entry.thumbnail):
+                        continue
+                else:
+                    self._validate_contained_path(entry.file, self.assets_dir, "Library asset path")
+                    if entry.thumbnail:
+                        try:
+                            self._validate_contained_path(entry.thumbnail, self.previews_dir, "Library thumbnail path")
+                        except ValidationError:
+                            entry.thumbnail = ""
                 result.append(entry)
             except (TypeError, ValueError, ValidationError):
                 continue
@@ -192,7 +217,7 @@ class AssetLibrary:
             if destination.is_symlink():
                 destination.unlink()
             elif destination.exists():
-                rows = self.list_assets()
+                rows = self._rows_for_update()
                 for row in rows:
                     if row.id == asset_id and Path(row.file).resolve() == destination.resolve():
                         return row
@@ -235,14 +260,14 @@ class AssetLibrary:
             favorite=bool(favorite),
             collection=str(collection).strip()[:128],
         )
-        rows = [item for item in self.list_assets() if item.id != entry.id]
+        rows = [item for item in self._rows_for_update() if item.id != entry.id]
         rows.append(entry)
         self._write(rows)
         return entry
 
     def update(self, asset_id: str, **changes: Any) -> Optional[AssetMetadata]:
         asset_id = _validate_asset_id(asset_id)
-        rows = self.list_assets()
+        rows = self._rows_for_update()
         found = None
         for entry in rows:
             if entry.id == asset_id:
@@ -265,7 +290,7 @@ class AssetLibrary:
 
     def remove(self, asset_id: str) -> bool:
         asset_id = _validate_asset_id(asset_id)
-        rows = self.list_assets()
+        rows = self._rows_for_update()
         remaining = [entry for entry in rows if entry.id != asset_id]
         if len(remaining) == len(rows):
             return False
@@ -278,4 +303,4 @@ class AssetLibrary:
 
     def count(self) -> int:
         """Return the number of valid metadata rows currently persisted."""
-        return len(self.list_assets())
+        return len(self._rows_for_update())

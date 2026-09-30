@@ -138,13 +138,23 @@ def _target_location(options: ImportOptions) -> Any:
     return tuple(bpy.context.scene.cursor.location)
 
 
+def _translation_roots(objects: Sequence[Any]) -> list[Any]:
+    """Return objects whose translation is not inherited from another member.
+
+    Moving every object would shift a parented child twice in world space and
+    distort an imported hierarchy, so only top-level members are moved.
+    """
+    member_ids = {id(obj) for obj in objects}
+    return [obj for obj in objects if obj.parent is None or id(obj.parent) not in member_ids]
+
+
 def _center_origin(objects: Sequence[Any], target: Any) -> None:
     points = [obj.matrix_world @ _bounds_center(obj) for obj in objects if obj.type == 'MESH']
     if not points:
         return
     center = sum((_vector(point) for point in points), _vector((0.0, 0.0, 0.0))) / len(points)
     offset = _vector(target) - center
-    for obj in objects:
+    for obj in _translation_roots(objects):
         obj.location += offset
 
 
