@@ -71,18 +71,18 @@ relocated from the ASSET LIBRARY panel.
 
 1. Open Blender's Extensions preferences.
 2. Enable **Install from Disk**.
-3. Select the built `ai_3d_generator-<version>.zip` after the release build.
+3. Select the built `ai3dgenerator-<version>.zip` after the release build.
 4. Enable **AI 3D Object Generator**.
 
 For source development, use Blender's development add-on workflow and point it
-at the `ai_3d_generator` package directory, which contains the manifest and
+at the `ai3dgenerator` package directory, which contains the manifest and
 `__init__.py`.
 
 ### Production installation
 
 Build the zip with the command below, then use **Install from Disk** in
 Blender. Keep the zip immutable after release; increment the semantic version
-in `ai_3d_generator/blender_manifest.toml` for every release.
+in `ai3dgenerator/blender_manifest.toml` for every release.
 
 ## 5. First setup
 
@@ -140,7 +140,7 @@ same UI. The existing generic adapter intentionally makes no vendor assumptions.
 - **SETTINGS** opens the extension preferences.
 - **OPEN ASSET FOLDER** opens the local cache directory.
 
-The default cache is a user-local `ai_3d_generator` directory in the system
+The default cache is a user-local `ai3dgenerator` directory in the system
 temporary directory. Set a persistent cache directory in Preferences if assets
 must survive operating-system cleanup.
 
@@ -178,7 +178,7 @@ Batch controller / Blender-native export
 ```
 
 Core/provider/network modules are pure Python and testable without Blender.
-`import_manager.py` and `post_processor.py` are isolated Blender-facing modules.
+`importManager.py` and `postProcessor.py` are isolated Blender-facing modules.
 The timer callback is single-threaded by design: it avoids touching `bpy.data`
 from a worker thread. For very slow network calls, reduce the request timeout
 or move the transport to a future thread/queue architecture with strict main-thread
@@ -187,7 +187,7 @@ handoff.
 ## 10. Development
 
 ```bash
-cd ~/ai_3d_generator_extension
+cd ~/ai3dgenerator_extension
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pytest -q
@@ -239,9 +239,9 @@ Blender's extension command is the source of truth:
 
 ```bash
 BLENDER=/Applications/Blender.app/Contents/MacOS/Blender
-"$BLENDER" --command extension validate ai_3d_generator
+"$BLENDER" --command extension validate ai3dgenerator
 "$BLENDER" --command extension build \
-  --source-dir ai_3d_generator \
+  --source-dir ai3dgenerator \
   --output-dir checks \
   --verbose
 ```
@@ -249,7 +249,7 @@ BLENDER=/Applications/Blender.app/Contents/MacOS/Blender
 Validate the resulting archive as well:
 
 ```bash
-"$BLENDER" --command extension validate checks/ai_3d_generator-<version>.zip
+"$BLENDER" --command extension validate checks/ai3dgenerator-<version>.zip
 ```
 
 The manifest uses Blender's documented schema version `1.0.0` and requests only
@@ -260,7 +260,7 @@ The manifest uses Blender's documented schema version `1.0.0` and requests only
 - **Blank sidebar:** enable the extension and confirm Blender 4.5+; inspect the
   Blender console for registration errors.
 - **Mock fails to import:** the fixture is included in the package; rebuild it
-  with `.venv/bin/python ai_3d_generator/fixtures/build_fixture.py` if source
+  with `.venv/bin/python ai3dgenerator/fixtures/buildFixture.py` if source
   files were copied incompletely.
 - **Provider says invalid job ID:** map the actual response field, for example
   `data.id`; the extension rejects path traversal rather than guessing.

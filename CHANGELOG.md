@@ -11,6 +11,15 @@
 - Renamed the test modules under `tests/` after the area they cover (for example
   `tests/storage.py` instead of `tests/test_storage.py`) and added `pytest.ini`
   so the suite is still collected.
+- Removed underscores from the package and module names: the extension package
+  is now `ai3dgenerator/` and modules use camelCase, such as
+  `services/jobManager.py`, `providers/customRest.py`, and
+  `ui/operatorsWorkspace.py`.
+- Test functions use a `check` prefix instead of `test_`; `pytest.ini` now sets
+  `python_functions = check*`.
+- **Breaking:** the Blender extension id changed from `ai_3d_generator` to
+  `ai3dgenerator`. Remove the previously installed copy before installing this
+  build.
 
 ### Fixed
 

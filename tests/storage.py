@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from ai_3d_generator.core.errors import ValidationError
-from ai_3d_generator.services.library_service import AssetLibrary, SCHEMA_VERSION
+from ai3dgenerator.core.errors import ValidationError
+from ai3dgenerator.services.libraryService import AssetLibrary, SCHEMA_VERSION
 
 
-def test_library_migrates_future_schema_by_ignoring_unknown_rows(tmp_path: Path):
+def checkLibraryMigratesFutureSchemaByIgnoringUnknownRows(tmp_path: Path):
     library = AssetLibrary(tmp_path)
     source = tmp_path / "asset.glb"
     source.write_bytes(b"fixture")
@@ -20,7 +20,7 @@ def test_library_migrates_future_schema_by_ignoring_unknown_rows(tmp_path: Path)
     assert library.list_assets() == []
 
 
-def test_library_rejects_secret_like_metadata_and_invalid_tags(tmp_path: Path):
+def checkLibraryRejectsSecretLikeMetadataAndInvalidTags(tmp_path: Path):
     library = AssetLibrary(tmp_path)
     source = tmp_path / "asset.glb"
     source.write_bytes(b"fixture")
@@ -28,7 +28,7 @@ def test_library_rejects_secret_like_metadata_and_invalid_tags(tmp_path: Path):
         library.add_asset(asset_id="a", prompt="chair", provider="mock", model="m", output_format="glb", file_path=source, tags=["x" * 1000])
 
 
-def test_library_rejects_symlink_and_external_file(tmp_path: Path) -> None:
+def checkLibraryRejectsSymlinkAndExternalFile(tmp_path: Path) -> None:
     library = AssetLibrary(tmp_path)
     external = tmp_path / "external.glb"
     external.write_bytes(b"external")
@@ -47,7 +47,7 @@ def test_library_rejects_symlink_and_external_file(tmp_path: Path) -> None:
         library.resolve_asset_path(str(link))
 
 
-def test_library_copy_repairs_unknown_partial_destination(tmp_path: Path) -> None:
+def checkLibraryCopyRepairsUnknownPartialDestination(tmp_path: Path) -> None:
     library = AssetLibrary(tmp_path)
     source = tmp_path / "source.glb"
     source.write_bytes(b"valid")
@@ -62,7 +62,7 @@ def test_library_copy_repairs_unknown_partial_destination(tmp_path: Path) -> Non
     assert destination.read_bytes() == b"valid"
 
 
-def test_library_asset_id_cannot_escape_generated_directory(tmp_path: Path) -> None:
+def checkLibraryAssetIdCannotEscapeGeneratedDirectory(tmp_path: Path) -> None:
     library = AssetLibrary(tmp_path)
     source = tmp_path / "source.glb"
     source.write_bytes(b"valid")
@@ -72,7 +72,7 @@ def test_library_asset_id_cannot_escape_generated_directory(tmp_path: Path) -> N
     assert not (tmp_path.parent / "escape.glb").exists()
 
 
-def test_library_metadata_schema_is_explicit(tmp_path: Path):
+def checkLibraryMetadataSchemaIsExplicit(tmp_path: Path):
     library = AssetLibrary(tmp_path)
     assert SCHEMA_VERSION == 1
     assert library.metadata_path.parent == tmp_path
