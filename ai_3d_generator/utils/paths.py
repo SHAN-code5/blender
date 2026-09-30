@@ -8,12 +8,20 @@ from .validation import validate_http_url, validate_job_id
 
 
 def join_endpoint(base_url: str, endpoint: str) -> str:
-    """Join a configured base URL and endpoint, preserving the base path."""
+    """Join a configured base URL and endpoint, preserving the base path.
+
+    A leading slash on the endpoint is treated as relative to the configured
+    base path rather than the server root, so a provider hosted under a path
+    prefix (for example ``https://api.example.com/v1``) keeps that prefix even
+    with the default ``/generate`` mapping. Absolute endpoints are still
+    accepted here and then rejected by the origin check below.
+    """
     base = validate_http_url(base_url, "API Base URL")
     if not str(endpoint or "").strip():
         raise ValidationError("API endpoint cannot be empty.")
     endpoint = str(endpoint).strip()
-    joined = validate_http_url(urljoin(base.rstrip("/") + "/", endpoint), "API endpoint")
+    relative = endpoint.lstrip("/")
+    joined = validate_http_url(urljoin(base.rstrip("/") + "/", relative), "API endpoint")
     base_url_parsed = urlparse(base)
     endpoint_url_parsed = urlparse(joined)
     base_host = (base_url_parsed.hostname or "").lower()

@@ -262,7 +262,8 @@ class AI3D_OT_generate(Operator):
             props.timer_running = not COORDINATOR.job.snapshot.is_finished
             if props.timer_running:
                 props.status = COORDINATOR.job.snapshot.message
-                COORDINATOR.timer = bpy.app.timers.register(_timer_callback, first_interval=props.poll_interval)
+                # Use the clamped job interval, not the raw Scene value.
+                COORDINATOR.timer = bpy.app.timers.register(_timer_callback, first_interval=COORDINATOR.job.poll_interval)
             return {'FINISHED'}
         except (AI3DError, ValueError, OSError) as exc:
             message = exc.user_message() if isinstance(exc, AI3DError) else str(exc)
@@ -509,7 +510,7 @@ def _record_completed_asset(context: Any, result: Any, request: GenerationReques
             name=request.prompt,
             copy_file=True,
         )
-    except (OSError, ValueError) as exc:
+    except (AI3DError, OSError, ValueError) as exc:
         props.error_message = safe_provider_message(f"Asset downloaded, but library recording failed: {exc}", "Asset downloaded, but library recording failed.")
 
 
@@ -528,9 +529,8 @@ def _on_finished(context: Any, result: Any, snapshot: JobSnapshot) -> None:
     _set_runtime_state(props, snapshot, terminal=True)
     try:
         request = GenerationRequest.from_dict(COORDINATOR.request or {})
-        if snapshot.state == STATUS_COMPLETED and snapshot.output_path:
-            _import_downloaded(context, snapshot.output_path)
-            _record_completed_asset(context, result, request)
+        # Persist the outcome before best-effort side effects so a failed import
+        # or library write cannot drop the history record.
         _add_history(
             context,
             snapshot.job_id,
@@ -539,6 +539,9 @@ def _on_finished(context: Any, result: Any, snapshot: JobSnapshot) -> None:
             snapshot.state,
             snapshot.error,
         )
+        if snapshot.state == STATUS_COMPLETED and snapshot.output_path:
+            _import_downloaded(context, snapshot.output_path)
+            _record_completed_asset(context, result, request)
         props.status = (
             "3D asset generated and imported successfully."
             if snapshot.state == STATUS_COMPLETED

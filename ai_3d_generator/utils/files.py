@@ -5,7 +5,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 from ..core.errors import ValidationError
 

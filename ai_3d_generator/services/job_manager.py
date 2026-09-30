@@ -217,7 +217,9 @@ class JobManager:
         safe_message = safe_provider_message(message, "Generation failed.")
         safe_detail = safe_provider_error(detail)
         self.snapshot.error = safe_detail or safe_message
-        self._update(state, self.snapshot.progress if state == STATUS_TIMEOUT else 1.0, safe_message)
+        # Terminal failures keep the progress reached so far; forcing 1.0 would
+        # display a full bar for a job that never completed.
+        self._update(state, self.snapshot.progress, safe_message)
         self._notify_finished(GenerationResult(job_id=self.snapshot.job_id, status=state, message=safe_message, error=self.snapshot.error))
 
     def _notify_finished(self, result: GenerationResult) -> None:

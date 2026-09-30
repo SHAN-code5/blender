@@ -26,6 +26,17 @@ def _provider_items(self: Any, context: Any) -> list[tuple[str, str, str]]:
     ]
 
 
+def _provider_default_index() -> int:
+    """Index of the preferred default provider for the dynamic enum.
+
+    Blender requires an integer ``default`` when ``items`` is a callback, so the
+    identifier is resolved to its position in the registry instead of using a
+    string default (which fails to register on Blender 5.x).
+    """
+    keys = list(PROVIDERS)
+    return keys.index("mock") if "mock" in keys else 0
+
+
 def _template_items(self: Any, context: Any) -> list[tuple[str, str, str]]:
     from ..services.prompt_service import PromptTemplates
 
@@ -33,6 +44,14 @@ def _template_items(self: Any, context: Any) -> list[tuple[str, str, str]]:
         (template.id, template.name, template.description or template.name)
         for template in PromptTemplates.defaults().values()
     ]
+
+
+def _template_default_index() -> int:
+    """Index of the preferred default prompt template for the dynamic enum."""
+    from ..services.prompt_service import PromptTemplates
+
+    keys = list(PromptTemplates.defaults())
+    return keys.index("realistic_prop") if "realistic_prop" in keys else 0
 
 
 class AI3D_GeneratedHistoryItem(PropertyGroup):
@@ -64,7 +83,7 @@ class AI3D_Settings(PropertyGroup):
     """Transient UI state stored on Scene and mirrored by Preferences."""
 
     prompt: StringProperty(name="Prompt", default="", description="Describe the 3D object to generate")
-    provider: EnumProperty(name="Provider", items=_provider_items, default="mock", description="Registered provider identifier")
+    provider: EnumProperty(name="Provider", items=_provider_items, default=_provider_default_index(), description="Registered provider identifier")
     model: StringProperty(name="Model", default="default", description="Provider model identifier")
     negative_prompt: StringProperty(name="Negative Prompt", default="")
     quality: EnumProperty(name="Quality", items=[("draft", "Draft", "Fast preview"), ("standard", "Standard", "Balanced quality"), ("high", "High", "Highest supported quality")])
@@ -79,7 +98,7 @@ class AI3D_Settings(PropertyGroup):
     generation_mode: EnumProperty(name="Generation Mode", items=[("text_to_3d", "Text → 3D", "Generate from a text prompt"), ("image_to_3d", "Image → 3D", "Generate from a reference image")], default="text_to_3d")
     image_path: StringProperty(name="Reference Image", default="", subtype='FILE_PATH')
     reference_image: PointerProperty(name="Reference Image Preview", type=bpy.types.Image)
-    prompt_template: EnumProperty(name="Prompt Template", items=_template_items, default="realistic_prop")
+    prompt_template: EnumProperty(name="Prompt Template", items=_template_items, default=_template_default_index())
     enhance_prompt: BoolProperty(name="Enhance Prompt", default=False)
     enhanced_prompt: StringProperty(name="Enhanced Prompt", default="")
     original_prompt: StringProperty(name="Original Prompt", default="")

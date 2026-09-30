@@ -7,7 +7,6 @@ import pytest
 
 from ai_3d_generator.core.errors import ValidationError
 from ai_3d_generator.core.capabilities import ProviderCapabilities
-from ai_3d_generator.providers.base import Base3DProvider
 from ai_3d_generator.providers.image_to_3d import ImageTo3DProvider
 from ai_3d_generator.services.batch_service import BatchQueue
 from ai_3d_generator.services.library_service import AssetLibrary

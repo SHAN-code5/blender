@@ -29,9 +29,17 @@ class DownloadedAsset:
 
 
 def detect_format(url: str, requested_format: str = "", content_type: str = "") -> str:
-    """Choose format from URL, content type, then the explicit request setting."""
+    """Choose format from URL, content type, then the explicit request setting.
+
+    A URL suffix is only a hint: provider download endpoints frequently end in
+    a non-asset extension (for example ``/download.php`` or ``/result?id=1``)
+    while still returning a valid mesh. An unrecognized suffix therefore falls
+    through to the content type and requested format instead of failing the
+    download before it starts.
+    """
+    allowed = {item.lower().lstrip(".") for item in SUPPORTED_FORMATS}
     suffix = Path(urlparse(url).path).suffix.lower().lstrip(".")
-    if suffix:
+    if suffix and suffix in allowed:
         return validate_asset_format(suffix, SUPPORTED_FORMATS)
     mime = str(content_type or "").split(";", 1)[0].strip().lower()
     mime_format = MIME_FORMAT_BY_PREFIX.get(mime, "")
@@ -39,6 +47,8 @@ def detect_format(url: str, requested_format: str = "", content_type: str = "") 
         return validate_asset_format(mime_format, SUPPORTED_FORMATS)
     if requested_format:
         return validate_asset_format(requested_format, SUPPORTED_FORMATS)
+    if suffix:
+        raise ValidationError(f"Unsupported 3D asset format: {suffix}")
     raise ProviderResponseError("The downloaded file has no recognizable 3D asset format.")
 
 

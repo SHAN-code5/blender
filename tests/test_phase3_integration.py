@@ -125,7 +125,6 @@ def test_generation_request_round_trip_preserves_phase3_fields():
 
 
 def test_history_preserves_phase3_request_fields():
-    from ai_3d_generator.core.models import HistoryEntry
     from ai_3d_generator.services.history import make_entry, read_history, write_history
 
     with tempfile.TemporaryDirectory() as temp_dir:

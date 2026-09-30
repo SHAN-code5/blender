@@ -5,14 +5,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy.types import Operator
 
 from ..core.constants import STATUS_CANCELLED, STATUS_COMPLETED, STATUS_FAILED, STATUS_TIMEOUT
 from ..core.errors import AI3DError, ValidationError
 from ..services.batch_service import BatchQueue
 from ..services.export_manager import export_objects
-from ..services.library_service import AssetLibrary
 from ..services.prompt_service import PromptEnhancer
 from .operators import COORDINATOR, _import_downloaded, _scene_props
 from .runtime_phase3 import library_for_props
@@ -210,11 +209,15 @@ class AI3D_OT_batch_delete(Operator):
 
     def execute(self, context: Any) -> set[str]:
         if BATCH.queue is None or not self.job_id:
+            self.report({'ERROR'}, "Batch job not found.")
             return {'CANCELLED'}
         try:
-            BATCH.queue.remove(self.job_id)
+            removed = BATCH.queue.remove(self.job_id)
         except AI3DError as exc:
             self.report({'ERROR'}, exc.user_message())
+            return {'CANCELLED'}
+        if not removed:
+            self.report({'ERROR'}, "Batch job not found.")
             return {'CANCELLED'}
         return {'FINISHED'}
 

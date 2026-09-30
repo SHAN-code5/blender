@@ -8,7 +8,6 @@ from ..core.capabilities import ProviderCapabilities
 from ..core.errors import ValidationError
 from ..providers.registry import get_provider_class
 from ..services.library_service import AssetLibrary
-from ..utils.images import validate_image_path
 
 
 def provider_capabilities(provider_id: str, config: Any = None) -> ProviderCapabilities:
