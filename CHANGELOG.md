@@ -8,6 +8,9 @@
   removed the remaining "Phase 3" wording from the code, docs, and changelog.
 - Stopped tracking the build artifacts under `checks/`; the extension zip is
   produced by the packaging command and is now ignored by git.
+- Renamed the test modules under `tests/` after the area they cover (for example
+  `tests/storage.py` instead of `tests/test_storage.py`) and added `pytest.ini`
+  so the suite is still collected.
 
 ### Fixed
 
