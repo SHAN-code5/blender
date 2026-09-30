@@ -1,4 +1,4 @@
-"""Phase 3 pure-Python foundation tests (RED phase)."""
+"""Pure-Python foundation tests for providers, services, and validation."""
 from __future__ import annotations
 
 from pathlib import Path

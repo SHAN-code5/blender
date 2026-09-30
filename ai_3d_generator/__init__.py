@@ -13,7 +13,7 @@ _MODULES = (
     ".ui.properties",
     ".ui.preferences",
     ".ui.operators",
-    ".ui.operators_phase3",
+    ".ui.operators_workspace",
     ".ui.panels",
 )
 
@@ -28,10 +28,10 @@ def register() -> None:
     properties = modules[0]
     preferences = modules[1]
     operators = modules[2]
-    phase3 = modules[3]
+    workspace = modules[3]
     panels = modules[4]
     attempted: list[Any] = []
-    for module in (properties, preferences, runtime, operators, phase3, panels):
+    for module in (properties, preferences, runtime, operators, workspace, panels):
         try:
             module.register()
         except Exception:

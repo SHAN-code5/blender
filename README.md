@@ -15,7 +15,7 @@ It validates the request, submits it to a configured provider, polls a
 long-running job, downloads a bounded local asset, validates its format, and
 optionally imports it into the dedicated `AI3D_Generated` collection.
 
-The Phase 3 workspace provides:
+The workspace provides:
 
 - **CREATE** — text-to-3D and image-to-3D modes, provider/model selection,
   prompt templates, reference-image validation and preview, generation status,
@@ -71,7 +71,7 @@ relocated from the ASSET LIBRARY panel.
 
 1. Open Blender's Extensions preferences.
 2. Enable **Install from Disk**.
-3. Select `checks/ai_3d_generator-0.2.0.zip` after the Phase 3 release build.
+3. Select the built `ai_3d_generator-<version>.zip` after the release build.
 4. Enable **AI 3D Object Generator**.
 
 For source development, use Blender's development add-on workflow and point it
@@ -203,7 +203,7 @@ Automated tests cover:
 - URL, job ID, path, image, and asset-format validation.
 - Provider capability agreement and provider-independent mode routing.
 - Mock queued/processing/completed/failed/cancelled transitions.
-- History serialization, Phase 3 field preservation, and secret omission.
+- History serialization, extended field preservation, and secret omission.
 - Download allowlisting, authenticated host boundaries, format detection, and
   size/integrity checks.
 - Job state transitions, batch idempotence, and terminal callbacks.
@@ -213,7 +213,7 @@ Automated tests cover:
 
 Manual Blender test plan:
 
-1. Install the fresh Phase 3 zip and enable the extension.
+1. Install the freshly built extension zip and enable the extension.
 2. Confirm the **AI 3D WORKSPACE** sidebar and all collapsible sections appear.
 3. Run the Mock Provider in text mode with a simple prompt.
 4. Verify queued, processing, downloading, completed, history, generated
@@ -249,7 +249,7 @@ BLENDER=/Applications/Blender.app/Contents/MacOS/Blender
 Validate the resulting archive as well:
 
 ```bash
-"$BLENDER" --command extension validate checks/ai_3d_generator-0.2.0.zip
+"$BLENDER" --command extension validate checks/ai_3d_generator-<version>.zip
 ```
 
 The manifest uses Blender's documented schema version `1.0.0` and requests only

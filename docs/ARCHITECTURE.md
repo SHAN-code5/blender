@@ -4,7 +4,7 @@ The package source directory is `ai_3d_generator/`, not the repository root.
 The manifest and `__init__.py` intentionally live in the same directory, as
 required by Blender's extension package builder.
 
-## Phase 3 architecture
+## Architecture
 
 ```text
 Blender UI / Scene properties / Add-on Preferences
@@ -29,7 +29,7 @@ The core, provider, utility, and non-Blender service modules do not import
 export, thumbnail, and optimization modules. Worker code never touches
 `bpy.data` or Blender operators; the timer callback remains on the main thread.
 
-### Phase 3 additions
+### Module additions
 
 - `core/capabilities.py` is the source of truth for supported modes and formats.
   Mode checks require both the declared mode and its feature flag.
@@ -78,5 +78,6 @@ blender --factory-startup -b --python checks/registration_probe.py
 blender --factory-startup -b --python checks/registration_probe_twice.py
 ```
 
-The checked-in historical `checks/ai_3d_generator-0.1.0.zip` is not a fresh
-Phase 3 artifact and must not be used as release evidence.
+The generated `checks/ai_3d_generator-<version>.zip` archive is a build output
+and is not tracked in git; always rebuild it from the current source before
+release verification.

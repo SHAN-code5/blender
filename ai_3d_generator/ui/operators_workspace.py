@@ -1,4 +1,4 @@
-"""Phase 3 operators: prompt tools, image preview, real batch queue, export, and library."""
+"""Workspace operators: prompt tools, image preview, batch queue, export, and library."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,7 +14,7 @@ from ..services.batch_service import BatchQueue
 from ..services.export_manager import export_objects
 from ..services.prompt_service import PromptEnhancer
 from .operators import COORDINATOR, _import_downloaded, _scene_props
-from .runtime_phase3 import library_for_props
+from .runtime_workspace import library_for_props
 
 
 class _BatchState:
@@ -70,7 +70,7 @@ class AI3D_OT_load_reference(Operator):
     def execute(self, context: Any) -> set[str]:
         props = _scene_props(context)
         try:
-            from .runtime_phase3 import load_reference_preview
+            from .runtime_workspace import load_reference_preview
             image = load_reference_preview(self.filepath, context)
             props.image_path = image.filepath
             props.reference_image = image

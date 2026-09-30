@@ -1,6 +1,13 @@
-# Phase 3 Changelog
+# Changelog
 
 ## Unreleased
+
+### Changed
+
+- Renamed the internal `*_phase3` UI and test modules to `*_workspace` and
+  removed the remaining "Phase 3" wording from the code, docs, and changelog.
+- Stopped tracking the build artifacts under `checks/`; the extension zip is
+  produced by the packaging command and is now ignored by git.
 
 ### Fixed
 
@@ -28,7 +35,7 @@
 - Deleting a missing batch job now reports an error instead of failing silently.
 - Removed unused imports across the package and test suite.
 
-## 0.2.0 — Phase 3 workspace
+## 0.2.0 — Workspace
 
 ### Added
 
@@ -61,7 +68,7 @@
   items.
 - Thumbnail rendering restores scene camera/render state in `finally`.
 - Registration and partial-registration teardown are guarded and rollback-safe.
-- History rows carry Phase 3 request fields, while malformed or credential-like
+- History rows carry extended request fields, while malformed or credential-like
   rows are ignored.
 
 ## 0.1.0
