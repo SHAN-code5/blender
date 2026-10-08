@@ -6,7 +6,7 @@ configs written for other Blender MCP servers keep working.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping, Optional
 
 DEFAULT_HOST = "127.0.0.1"
@@ -28,11 +28,29 @@ class Settings:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     timeout: float = DEFAULT_TIMEOUT
-    token: Optional[str] = None
+    token: Optional[str] = field(default=None, repr=False)
     safe_mode: bool = False
     transport: str = "stdio"
     http_host: str = DEFAULT_HTTP_HOST
     http_port: int = DEFAULT_HTTP_PORT
+    cache_dir: Optional[str] = None
+    sketchfab_api_key: Optional[str] = field(default=None, repr=False)
+    polypizza_api_key: Optional[str] = field(default=None, repr=False)
+    tripo_api_key: Optional[str] = field(default=None, repr=False)
+    hyper3d_api_key: Optional[str] = field(default=None, repr=False)
+    generation_config: Optional[str] = None
+
+
+# Settings that are only read from the environment. The BLENDERMCP_* spellings
+# are accepted so keys already exported for other Blender MCP servers work.
+_ENV_ONLY = {
+    "cache_dir": ("BLENDER_MCP_CACHE",),
+    "sketchfab_api_key": ("BLENDER_MCP_SKETCHFAB_API_KEY", "BLENDERMCP_SKETCHFAB_API_KEY"),
+    "polypizza_api_key": ("BLENDER_MCP_POLYPIZZA_API_KEY", "BLENDERMCP_POLYPIZZA_API_KEY"),
+    "tripo_api_key": ("BLENDER_MCP_TRIPO_API_KEY", "TRIPO_API_KEY"),
+    "hyper3d_api_key": ("BLENDER_MCP_HYPER3D_API_KEY", "BLENDERMCP_HYPER3D_API_KEY"),
+    "generation_config": ("BLENDER_MCP_GENERATION_CONFIG",),
+}
 
 
 def parse_port(value, source: str) -> int:
@@ -101,6 +119,10 @@ def load_settings(flags=None, environ: Optional[Mapping[str, str]] = None) -> Se
     found = _env(environ, "BLENDER_MCP_HTTP_PORT")
     if found:
         values["http_port"] = parse_port(found[1], found[0])
+    for name, variables in _ENV_ONLY.items():
+        found = _env(environ, *variables)
+        if found:
+            values[name] = found[1].strip()
 
     if flags is not None:
         if getattr(flags, "host", None):

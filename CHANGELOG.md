@@ -4,28 +4,49 @@
 
 ### Added
 
-- Blender MCP Bridge 0.2.0 (`blenderMcp/`): an MCP server and Blender add-on
-  pair that works with MCP SDK 1.x and 2.x, Python 3.10+, Blender 4.2+ (as an
-  extension) and 3.0-4.1 (as a legacy add-on), with the UI or headless.
-  - Fifteen tools: scene and object inspection, create/modify/delete objects,
-    materials, modifiers, import and export across glTF, FBX, OBJ, STL, PLY,
-    USD, Alembic and .blend, auto-framed renders returned as images, viewport
-    screenshots, Python execution, and saving.
-  - One TCP connection per request, so concurrent tool calls cannot mix
-    responses; commands that time out before they start are cancelled.
-  - Optional token authentication, a Blender-side switch for Python execution,
-    and an opt-in safe mode that rejects risky scripts.
-  - `blender-mcp-bridge` CLI with `serve` (stdio, SSE, streamable HTTP),
-    `config` for Claude Desktop, Claude Code, Cursor, VS Code and Windsurf,
-    `install-addon`, `build-addon`, and `doctor`; packaged via `pyproject.toml`
-    for `uvx`/`pip`.
-  - Headless runner (`blenderMcp/runHeadless.py`); GPU render engines are
-    refused in background mode without a GPU instead of crashing Blender.
-  - Tests against real Blender 4.5 and 5.0 (`tests/blenderBridgeAddon.py`) and
-    a CI matrix over Linux, Windows, macOS, Python 3.10/3.13 and both SDKs.
+- Blender MCP Bridge 0.3.0 (`blenderMcp/`), replacing the single-file add-on
+  from the first version: an MCP server and Blender add-on that work with MCP
+  SDK 1.x and 2.x, Python 3.10+, Blender 4.2+ as an extension and older
+  versions as a legacy add-on, with the UI or headless.
+  - 22 tools: scene and object inspection; create, modify, and delete objects;
+    materials and modifiers; undo and redo; import and export across glTF,
+    FBX, OBJ, STL, PLY, USD, Alembic, and .blend (with target size and
+    placement); renders, multi-view renders, and viewport screenshots returned
+    as images; Python execution; saving.
+  - Asset libraries: search and import Poly Haven HDRIs, PBR texture sets, and
+    models, Sketchfab models, and Poly Pizza models. Downloads run in the
+    server with size limits, checksum checks, and path-traversal protection,
+    are cached, and are sent over the bridge when Blender runs elsewhere.
+    Attribution is stored on imported data as `mcp_*` custom properties.
+  - AI generation with Tripo, Hyper3D Rodin, any REST service (the AI 3D
+    Object Generator's provider code), or an offline mock, from text or a
+    reference image. Long jobs continue in the background and are imported
+    once through `get_generation_status`.
+  - Built-in guides (tool and MCP resources) and a `build_scene` prompt.
+  - All tools are async; blocking work runs in threads, and each bridge
+    request uses its own connection, so concurrent calls never interfere.
+  - Optional token authentication, a Blender-side switch for Python
+    execution, and an opt-in safe mode that rejects risky scripts.
+  - `blender-mcp-bridge` CLI: `serve` (stdio, SSE, streamable HTTP), `config`
+    for Claude Desktop, Claude Code, Cursor, VS Code, and Windsurf,
+    `install-addon`, `update`, `build-addon`, `headless`, and `doctor`;
+    packaged with `pyproject.toml` for `uvx` and pip.
+  - Works around problems found on real installations: viewport screenshots
+    are drawn offscreen (window captures are black under Xvfb and some VMs),
+    multi-view renders do not need numpy (missing from some distribution
+    builds), Cycles previews skip denoising on builds without OpenImageDenoise,
+    and GPU render engines are refused in background mode instead of crashing
+    Blender.
+  - Tests against real Blender 4.5, 5.0, and 5.2 (`tests/blenderBridgeAddon.py`,
+    including a full asset and generation chain), a UI check on Blender 4.0
+    under Xvfb (`checks/blenderMcpUi.py`), and a CI matrix over Linux,
+    Windows, macOS, Python 3.10/3.13, and both MCP SDK versions.
 
 ### Changed
 
+- Rewrote the README: it now introduces both tools and corrects the extension's
+  panel and button names, importer operators, development setup, and
+  packaging commands.
 - Renamed the internal `*_phase3` UI and test modules to `*_workspace` and
   removed the remaining "Phase 3" wording from the code, docs, and changelog.
 - Stopped tracking the build artifacts under `checks/`; the extension zip is

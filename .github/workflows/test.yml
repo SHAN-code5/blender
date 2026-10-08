@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile all sources
-        run: python -m compileall -q ai3dgenerator blenderMcp tests
+        run: python -m compileall -q ai3dgenerator blenderMcp tests checks
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
       - name: Run headless test suite
@@ -42,9 +42,9 @@ jobs:
       - name: Install
         run: pip install pytest "${{ matrix.mcp }}"
       - name: Run Blender MCP tests
-        run: pytest -q tests/blenderBridge.py
+        run: pytest -q tests/blenderBridge.py tests/blenderBridgeAssets.py
 
-  # The add-on against real Blender through the bpy wheels (Python 3.11).
+  # The add-on against real Blender through the bpy wheels (background mode).
   blender-addon:
     name: blender-addon (bpy ${{ matrix.bpy }}, ${{ matrix.mcp }})
     runs-on: ubuntu-latest
@@ -53,14 +53,19 @@ jobs:
       matrix:
         include:
           - bpy: "4.5.*"
+            python: "3.11"
             mcp: "mcp>=1.10,<2"
           - bpy: "5.0.*"
+            python: "3.11"
+            mcp: "mcp>=2,<3"
+          - bpy: "5.2.*"
+            python: "3.13"
             mcp: "mcp>=2,<3"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
       - name: System libraries for bpy
         run: |
           sudo apt-get update
@@ -69,4 +74,28 @@ jobs:
       - name: Install
         run: pip install pytest "bpy==${{ matrix.bpy }}" "${{ matrix.mcp }}"
       - name: Run add-on tests on real Blender
-        run: pytest -q tests/blenderBridgeAddon.py tests/blenderBridge.py
+        run: pytest -q tests/blenderBridgeAddon.py tests/blenderBridge.py tests/blenderBridgeAssets.py
+
+  # The add-on in Blender's UI: Ubuntu's Blender 4.0 (legacy add-on path) under Xvfb.
+  blender-ui:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Blender and a virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends blender python3-numpy xvfb xauth libgl1-mesa-dri
+      - name: Install the MCP SDK
+        run: pip install "mcp>=2,<3"
+      - name: Run the UI checks
+        run: xvfb-run -a -s "-screen 0 1280x800x24" python checks/blenderMcpUi.py --blender blender --artifacts ui-artifacts
+      - name: Keep screenshots and renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-ui
+          path: ui-artifacts
+          if-no-files-found: ignore

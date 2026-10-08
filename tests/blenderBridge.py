@@ -1,7 +1,6 @@
 """Tests for the Blender MCP server package that need neither Blender nor a live MCP client."""
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 import socket
@@ -371,113 +370,82 @@ def check_cli_build_and_install(tmp_path, capsys):
 # MCP server (needs the mcp SDK, v1 or v2)
 # --------------------------------------------------------------------------
 
-class RecordingConnection:
-    def __init__(self, results=None, error=None):
-        self.calls = []
-        self.results = results or {}
-        self.error = error
+from bridgeHelpers import RecordingConnection, is_error as _is_error, run_tools as _run_tools  # noqa: E402
 
-    def send_command(self, command, params=None, timeout=None):
-        self.calls.append((command, params, timeout))
-        if self.error:
-            raise self.error
-        return self.results.get(command, {"command": command})
+ALL_TOOLS = {
+    "get_bridge_status", "get_scene_info", "list_objects", "get_object_info", "create_object",
+    "modify_object", "delete_objects", "set_material", "add_modifier", "undo", "import_model",
+    "export_scene", "save_blend_file", "render_image", "render_views", "viewport_screenshot",
+    "execute_blender_code", "search_assets", "import_asset", "generate_3d", "get_generation_status",
+    "get_guide",
+}
 
 
-@contextlib.asynccontextmanager
-async def _client(server):
-    from blenderMcp import compat
+def _server(connection, **settings):
+    from blenderMcp.server import build_server
 
-    if compat.SDK_MAJOR >= 2:
-        from mcp.client import Client
-
-        async with Client(server) as client:
-            yield client
-    else:
-        from mcp.shared.memory import create_connected_server_and_client_session
-
-        async with create_connected_server_and_client_session(server._mcp_server) as session:
-            yield session
-
-
-def _is_error(result) -> bool:
-    return bool(getattr(result, "is_error", None) or getattr(result, "isError", None))
-
-
-def _run_tools(server, calls):
-    import anyio
-
-    async def go():
-        async with _client(server) as client:
-            tools = (await client.list_tools()).tools
-            results = [await client.call_tool(name, args) for name, args in calls]
-            return tools, results
-
-    return anyio.run(go)
+    return build_server(Settings(**settings), connection)
 
 
 def check_server_exposes_annotated_tools():
     pytest.importorskip("mcp")
-    from blenderMcp.server import build_server
-
-    tools, _ = _run_tools(build_server(Settings(), RecordingConnection()), [])
-    names = {tool.name for tool in tools}
-    assert names == {
-        "get_bridge_status", "get_scene_info", "list_objects", "get_object_info", "create_object",
-        "modify_object", "delete_objects", "set_material", "add_modifier", "import_model",
-        "export_scene", "render_image", "viewport_screenshot", "execute_blender_code", "save_blend_file",
-    }
+    tools, _ = _run_tools(_server(RecordingConnection()), [])
+    assert {tool.name for tool in tools} == ALL_TOOLS
     by_name = {tool.name: tool for tool in tools}
     annotations = by_name["delete_objects"].annotations
     assert getattr(annotations, "destructiveHint", None) or getattr(annotations, "destructive_hint", None)
+    read_only = by_name["get_scene_info"].annotations
+    assert getattr(read_only, "readOnlyHint", None) or getattr(read_only, "read_only_hint", None)
     schema = getattr(by_name["create_object"], "input_schema", None) or by_name["create_object"].inputSchema
     assert "torus" in json.dumps(schema)
+    asset_schema = getattr(by_name["import_asset"], "input_schema", None) or by_name["import_asset"].inputSchema
+    assert "ctx" not in asset_schema["properties"]
 
 
 def check_server_forwards_tools_without_none_params():
     pytest.importorskip("mcp")
-    from blenderMcp.server import build_server
-
     connection = RecordingConnection()
-    _, results = _run_tools(build_server(Settings(), connection), [
+    _, results = _run_tools(_server(connection), [
         ("create_object", {"kind": "cube", "location": [1, 2, 3]}),
         ("modify_object", {"name": "Cube", "parent": ""}),
         ("execute_blender_code", {"code": "result = 1", "timeout_seconds": 5}),
+        ("save_blend_file", {"filepath": "/tmp/a.blend", "save_copy": True}),
+        ("undo", {"steps": 2}),
+        ("undo", {"redo": True}),
     ])
     assert not any(_is_error(r) for r in results)
     assert connection.calls == [
         ("create_object", {"kind": "cube", "location": [1.0, 2.0, 3.0]}, None),
         ("modify_object", {"name": "Cube", "parent": ""}, None),
         ("execute_code", {"code": "result = 1"}, 5.0),
+        ("save_blend_file", {"filepath": "/tmp/a.blend", "copy": True}, 300),
+        ("undo", {"steps": 2}, None),
+        ("redo", {"steps": 1}, None),
     ]
 
 
 def check_server_reports_blender_errors_readably():
     pytest.importorskip("mcp")
-    from blenderMcp.server import build_server
-
     connection = RecordingConnection(error=BlenderError("object not found: Ghost", code="not_found"))
-    _, (result,) = _run_tools(build_server(Settings(), connection), [("get_object_info", {"name": "Ghost"})])
+    _, (result,) = _run_tools(_server(connection), [("get_object_info", {"name": "Ghost"})])
     assert _is_error(result)
     assert "object not found: Ghost" in result.content[0].text
 
 
 def check_server_status_works_without_blender():
     pytest.importorskip("mcp")
-    from blenderMcp.server import build_server
-
     connection = RecordingConnection(error=BlenderNotRunning("not running", code="not_running"))
-    _, (result,) = _run_tools(build_server(Settings(port=9999), connection), [("get_bridge_status", {})])
+    _, (result,) = _run_tools(_server(connection, port=9999), [("get_bridge_status", {})])
     status = json.loads(result.content[0].text)
     assert status["connected"] is False and status["blender_address"] == "127.0.0.1:9999"
+    assert status["asset_sources"]["polyhaven"] == "ready"
+    assert "mock" in status["generators"]
 
 
 def check_safe_mode_blocks_before_reaching_blender():
     pytest.importorskip("mcp")
-    from blenderMcp.server import build_server
-
     connection = RecordingConnection()
-    _, (blocked, allowed) = _run_tools(build_server(Settings(safe_mode=True), connection), [
+    _, (blocked, allowed) = _run_tools(_server(connection, safe_mode=True), [
         ("execute_blender_code", {"code": "import os\nos.remove('x')"}),
         ("execute_blender_code", {"code": "result = len(bpy.data.objects)"}),
     ])
@@ -486,17 +454,24 @@ def check_safe_mode_blocks_before_reaching_blender():
     assert [c[0] for c in connection.calls] == ["execute_code"]
 
 
-def check_render_returns_an_image_block():
+def check_render_tools_return_image_blocks():
     pytest.importorskip("mcp")
     import base64
 
-    from blenderMcp.server import build_server
-
     png = b"\x89PNG\r\n\x1a\nfake"
-    connection = RecordingConnection(results={"render_image": {
-        "format": "png", "width": 16, "height": 16, "engine": "CYCLES", "view": "iso",
-        "filepath": None, "image_base64": base64.b64encode(png).decode()}})
-    _, (result,) = _run_tools(build_server(Settings(), connection), [("render_image", {"view": "iso"})])
-    assert [block.type for block in result.content] == ["image", "text"]
-    assert base64.b64decode(result.content[0].data) == png
-    assert "CYCLES" in result.content[1].text
+    encoded = base64.b64encode(png).decode()
+    connection = RecordingConnection(results={
+        "render_image": lambda p: {"format": "png", "width": 16, "height": 16, "engine": "CYCLES",
+                                   "view": "iso", "filepath": None, "image_base64": encoded},
+        "render_views": lambda p: {"format": "png", "views": ["front", "top"], "layout": [["front", "top"]],
+                                   "tile_size": [8, 6], "engine": "CYCLES", "image_base64": encoded},
+    })
+    _, (single, grid) = _run_tools(_server(connection), [
+        ("render_image", {"view": "iso"}),
+        ("render_views", {"views": ["front", "top"], "width": 16}),
+    ])
+    for result in (single, grid):
+        assert [block.type for block in result.content] == ["image", "text"]
+        assert base64.b64decode(result.content[0].data) == png
+    assert "layout" in grid.content[1].text
+    assert connection.calls[1] == ("render_views", {"views": ["front", "top"], "engine": "auto", "width": 16}, 300)

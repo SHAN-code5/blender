@@ -2,11 +2,11 @@
 requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
-# Packages only the Blender MCP server (blenderMcp/). The ai3dgenerator Blender
-# extension is built separately with Blender's extension tooling.
+# Packages the Blender MCP server (blenderMcp/). The ai3dgenerator Blender extension
+# itself is built separately with Blender's extension tooling.
 [project]
 name = "blender-mcp-bridge"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server that lets Claude and other MCP clients inspect and edit Blender scenes"
 readme = "blenderMcp/README.md"
 requires-python = ">=3.10"
@@ -24,8 +24,22 @@ blender-mcp-bridge = "blenderMcp.cli:entry_point"
 [project.urls]
 Homepage = "https://github.com/SHAN-code5/blender"
 
+# generate_3d reuses ai3dgenerator's provider, job, and download code; its Blender UI
+# modules (ai3dgenerator.ui) are not needed by the server and are left out.
 [tool.setuptools]
-packages = ["blenderMcp", "blenderMcp.addon"]
+packages = [
+    "blenderMcp",
+    "blenderMcp.addon",
+    "blenderMcp.guides",
+    "ai3dgenerator",
+    "ai3dgenerator.core",
+    "ai3dgenerator.providers",
+    "ai3dgenerator.services",
+    "ai3dgenerator.storage",
+    "ai3dgenerator.utils",
+]
 
 [tool.setuptools.package-data]
 "blenderMcp.addon" = ["blender_manifest.toml"]
+"blenderMcp.guides" = ["*.md"]
+"ai3dgenerator" = ["fixtures/mockAsset.glb"]

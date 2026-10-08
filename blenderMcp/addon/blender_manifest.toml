@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "blender_mcp_bridge"
-version = "0.2.0"
+version = "0.3.0"
 name = "Blender MCP Bridge"
 tagline = "Let MCP clients such as Claude inspect and edit your scene"
 maintainer = "Blender MCP contributors"
