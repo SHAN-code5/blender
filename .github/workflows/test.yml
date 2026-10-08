@@ -14,8 +14,59 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile all sources
-        run: python -m compileall -q ai3dgenerator tests
+        run: python -m compileall -q ai3dgenerator blenderMcp tests
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
       - name: Run headless test suite
         run: pytest -q
+
+  # The Blender MCP server on every OS, the oldest and newest supported Python,
+  # and both major versions of the MCP SDK.
+  blender-mcp:
+    name: blender-mcp (${{ matrix.os }}, py${{ matrix.python }}, ${{ matrix.mcp }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.13"]
+        mcp: ["mcp>=1.10,<2", "mcp>=2,<3"]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: pip install pytest "${{ matrix.mcp }}"
+      - name: Run Blender MCP tests
+        run: pytest -q tests/blenderBridge.py
+
+  # The add-on against real Blender through the bpy wheels (Python 3.11).
+  blender-addon:
+    name: blender-addon (bpy ${{ matrix.bpy }}, ${{ matrix.mcp }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bpy: "4.5.*"
+            mcp: "mcp>=1.10,<2"
+          - bpy: "5.0.*"
+            mcp: "mcp>=2,<3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: System libraries for bpy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxrender1 libxxf86vm1 libxfixes3 libxi6 libxkbcommon0 libsm6 libgl1
+      - name: Install
+        run: pip install pytest "bpy==${{ matrix.bpy }}" "${{ matrix.mcp }}"
+      - name: Run add-on tests on real Blender
+        run: pytest -q tests/blenderBridgeAddon.py tests/blenderBridge.py

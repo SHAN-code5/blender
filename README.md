@@ -5,6 +5,10 @@ importing 3D assets from text prompts or validated local reference images. The
 project is provider-independent: the UI, job manager, downloader, importer,
 post-processing, library, and export layers do not depend on a specific vendor.
 
+> **Blender MCP Bridge:** this repository also contains an MCP server that lets Claude and
+> other MCP clients build, render, import, and export Blender scenes. See
+> [blenderMcp/README.md](blenderMcp/README.md).
+
 ## 1. Product overview
 
 The extension accepts a prompt such as:

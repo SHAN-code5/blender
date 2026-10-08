@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Added
+
+- Blender MCP Bridge 0.2.0 (`blenderMcp/`): an MCP server and Blender add-on
+  pair that works with MCP SDK 1.x and 2.x, Python 3.10+, Blender 4.2+ (as an
+  extension) and 3.0-4.1 (as a legacy add-on), with the UI or headless.
+  - Fifteen tools: scene and object inspection, create/modify/delete objects,
+    materials, modifiers, import and export across glTF, FBX, OBJ, STL, PLY,
+    USD, Alembic and .blend, auto-framed renders returned as images, viewport
+    screenshots, Python execution, and saving.
+  - One TCP connection per request, so concurrent tool calls cannot mix
+    responses; commands that time out before they start are cancelled.
+  - Optional token authentication, a Blender-side switch for Python execution,
+    and an opt-in safe mode that rejects risky scripts.
+  - `blender-mcp-bridge` CLI with `serve` (stdio, SSE, streamable HTTP),
+    `config` for Claude Desktop, Claude Code, Cursor, VS Code and Windsurf,
+    `install-addon`, `build-addon`, and `doctor`; packaged via `pyproject.toml`
+    for `uvx`/`pip`.
+  - Headless runner (`blenderMcp/runHeadless.py`); GPU render engines are
+    refused in background mode without a GPU instead of crashing Blender.
+  - Tests against real Blender 4.5 and 5.0 (`tests/blenderBridgeAddon.py`) and
+    a CI matrix over Linux, Windows, macOS, Python 3.10/3.13 and both SDKs.
+
 ### Changed
 
 - Renamed the internal `*_phase3` UI and test modules to `*_workspace` and

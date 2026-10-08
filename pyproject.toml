@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+# Packages only the Blender MCP server (blenderMcp/). The ai3dgenerator Blender
+# extension is built separately with Blender's extension tooling.
+[project]
+name = "blender-mcp-bridge"
+version = "0.2.0"
+description = "MCP server that lets Claude and other MCP clients inspect and edit Blender scenes"
+readme = "blenderMcp/README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = ["mcp>=1.10,<3"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+]
+
+[project.scripts]
+blender-mcp-bridge = "blenderMcp.cli:entry_point"
+
+[project.urls]
+Homepage = "https://github.com/SHAN-code5/blender"
+
+[tool.setuptools]
+packages = ["blenderMcp", "blenderMcp.addon"]
+
+[tool.setuptools.package-data]
+"blenderMcp.addon" = ["blender_manifest.toml"]
