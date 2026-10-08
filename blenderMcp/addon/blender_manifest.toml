@@ -1,0 +1,18 @@
+schema_version = "1.0.0"
+
+id = "blender_mcp_bridge"
+version = "0.2.0"
+name = "Blender MCP Bridge"
+tagline = "Let MCP clients such as Claude inspect and edit your scene"
+maintainer = "Blender MCP contributors"
+type = "add-on"
+license = ["SPDX:MIT"]
+blender_version_min = "4.2.0"
+tags = ["Interface", "Import-Export", "Development"]
+
+[permissions]
+network = "Local socket server that MCP clients connect to"
+files = "Import, export, render, and save files on request"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", ".*", "*.zip"]
