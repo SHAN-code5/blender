@@ -3,13 +3,16 @@
     blender-mcp-bridge [serve] [--port 9876] [--transport stdio|sse|streamable-http] ...
     blender-mcp-bridge config CLIENT [--write] [--launcher uvx|python|command]
     blender-mcp-bridge install-addon [--blender-version 4.5] [--dest DIR]
+    blender-mcp-bridge update [--dry-run]
     blender-mcp-bridge build-addon [--out DIR]
+    blender-mcp-bridge headless [scene.blend] [--blender PATH] [--port 9876]
     blender-mcp-bridge doctor
 
 In stdio mode nothing but MCP traffic is written to stdout; messages go to stderr.
 """
 
 import argparse
+import os
 import platform
 import sys
 from pathlib import Path
@@ -18,7 +21,7 @@ from typing import List, Optional
 from . import __version__
 from .config import ConfigError, load_settings
 
-COMMANDS = ("serve", "config", "install-addon", "build-addon", "doctor")
+COMMANDS = ("serve", "config", "install-addon", "update", "build-addon", "headless", "doctor")
 
 
 def _add_connection_flags(parser: argparse.ArgumentParser) -> None:
@@ -60,8 +63,21 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--dest", type=Path, help="install into this add-ons folder instead")
     install.add_argument("--list", action="store_true", help="only show where it would be installed")
 
+    update = sub.add_parser("update", help="update every installed copy of the Blender add-on")
+    update.add_argument("--dry-run", action="store_true", help="only report what would change")
+
     build = sub.add_parser("build-addon", help="build installable add-on zips")
     build.add_argument("--out", type=Path, default=Path("dist"), help="output folder (default ./dist)")
+
+    headless = sub.add_parser("headless", help="run Blender without its UI, with the bridge listening")
+    headless.add_argument("file", nargs="?", help=".blend file to open (default: Blender's startup scene)")
+    headless.add_argument("--blender", default=os.environ.get("BLENDER", "blender"),
+                          help="Blender executable (env BLENDER, default 'blender' on PATH)")
+    headless.add_argument("--host", help="address to listen on (default 127.0.0.1)")
+    headless.add_argument("--port", type=int, help="port to listen on (env BLENDER_MCP_PORT, default 9876)")
+    headless.add_argument("--token", help="require this shared secret (env BLENDER_MCP_TOKEN)")
+    headless.add_argument("--no-code", action="store_true", help="disable execute_blender_code")
+    headless.add_argument("--gpu", action="store_true", help="allow EEVEE/Workbench renders (machine has a GPU)")
 
     doctor = sub.add_parser("doctor", help="check the environment and the connection to Blender")
     _add_connection_flags(doctor)
@@ -128,6 +144,30 @@ def cmd_install_addon(args) -> int:
     return 0
 
 
+def cmd_update(args) -> int:
+    from .addonTools import installed_copies, installed_version, update_copy, version_tuple
+
+    copies = installed_copies()
+    if not copies:
+        print("No installed copy of the Blender add-on was found. Install it with: blender-mcp-bridge install-addon")
+    for folder in copies:
+        current = installed_version(folder) or "unknown"
+        if current != "unknown" and version_tuple(current) >= version_tuple(__version__):
+            print(f"{folder}: {current} is up to date")
+            continue
+        if args.dry_run:
+            print(f"{folder}: would update {current} -> {__version__}")
+            continue
+        backup = update_copy(folder)
+        print(f"{folder}: updated {current} -> {__version__} (previous file kept as {backup.name})")
+    if copies and not args.dry_run:
+        print("Restart Blender, or disable and re-enable 'Blender MCP Bridge', to load the new version.")
+    print("The MCP server itself: uvx picks up new commits with `uvx --refresh --from "
+          "git+https://github.com/SHAN-code5/blender blender-mcp-bridge`; pip installs need "
+          "`pip install -U git+https://github.com/SHAN-code5/blender`. Restart your MCP client afterwards.")
+    return 0
+
+
 def cmd_build_addon(args) -> int:
     from .addonTools import build_zips
 
@@ -135,6 +175,26 @@ def cmd_build_addon(args) -> int:
     print(f"Blender 4.2+ extension:   {zips['extension']}")
     print(f"Blender 3.0-4.1 add-on:   {zips['legacy']}")
     return 0
+
+
+def cmd_headless(args) -> int:
+    import subprocess
+
+    runner = Path(__file__).resolve().parent / "runHeadless.py"
+    command = [args.blender, "-b"] + ([args.file] if args.file else []) + ["--python", str(runner), "--"]
+    for flag, value in (("--host", args.host), ("--port", args.port), ("--token", args.token)):
+        if value:
+            command += [flag, str(value)]
+    if args.no_code:
+        command.append("--no-code")
+    env = dict(os.environ, BLENDER_MCP_GPU="1") if args.gpu else None
+    try:
+        return subprocess.call(command, env=env)
+    except FileNotFoundError:
+        _err(f"Blender executable not found: {args.blender}. Pass --blender /path/to/blender or set BLENDER.")
+        return 1
+    except KeyboardInterrupt:
+        return 0
 
 
 def cmd_doctor(args) -> int:
@@ -146,6 +206,10 @@ def cmd_doctor(args) -> int:
     print(f"Python {platform.python_version()} on {platform.system()} {platform.machine()}")
     print(f"MCP SDK {compat.sdk_version()} (API v{compat.SDK_MAJOR})")
     print(f"Blender bridge address {settings.host}:{settings.port}, token {'set' if settings.token else 'not set'}")
+    keys = {"Sketchfab": settings.sketchfab_api_key, "Poly Pizza": settings.polypizza_api_key,
+            "Tripo": settings.tripo_api_key, "Hyper3D": settings.hyper3d_api_key}
+    print("API keys: " + ", ".join(f"{name} {'set' if value else 'not set'}" for name, value in keys.items())
+          + f"; custom generator config {'set' if settings.generation_config else 'not set'}")
     try:
         status = BlenderConnection(settings.host, settings.port, 10, settings.token).send_command(
             "get_bridge_status", timeout=10)
@@ -165,7 +229,9 @@ HANDLERS = {
     "serve": cmd_serve,
     "config": cmd_config,
     "install-addon": cmd_install_addon,
+    "update": cmd_update,
     "build-addon": cmd_build_addon,
+    "headless": cmd_headless,
     "doctor": cmd_doctor,
 }
 

@@ -18,7 +18,7 @@ Protocol (one JSON object per line):
 bl_info = {
     "name": "Blender MCP Bridge",
     "author": "Blender MCP contributors",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > MCP",
     "description": "Let MCP clients such as Claude inspect and edit your scene",
@@ -27,13 +27,16 @@ bl_info = {
 
 import base64
 import contextlib
+from array import array
 import hmac
 import io
 import json
 import math
 import os
 import queue
+import re
 import secrets
+import shutil
 import socket
 import socketserver
 import tempfile
@@ -43,9 +46,9 @@ import traceback
 
 import bpy  # must precede bmesh/mathutils when running as the standalone bpy module
 import bmesh
-from mathutils import Euler, Vector
+from mathutils import Euler, Matrix, Vector
 
-BRIDGE_VERSION = "0.2.0"
+BRIDGE_VERSION = "0.3.0"
 PROTOCOL_VERSION = 1
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9876
@@ -249,6 +252,7 @@ def cmd_get_bridge_status(params):
         "auth_required": bool(_state["token"]),
         "gpu_rendering": _gpu_rendering_available(),
         "address": "%s:%s" % (_state["host"], _state["port"]),
+        "commands": sorted(COMMANDS),
     }
 
 
@@ -296,6 +300,7 @@ def cmd_list_objects(params):
 
 def cmd_get_object_info(params):
     obj = _get_object(params.get("name"))
+    bpy.context.view_layer.update()
     info = _summary(obj)
     bbox = _world_bbox([obj])
     info["world_bounding_box"] = {"min": _round(bbox[0], 4), "max": _round(bbox[1], 4)} if bbox else None
@@ -344,9 +349,11 @@ def _bmesh_call(func, bm, radius_args, **kwargs):
 def _build_mesh(kind, size, segments):
     half = size / 2.0
     bm = bmesh.new()
+    # bmesh's calc_uvs only fills an existing UV layer; it never creates one.
+    bm.loops.layers.uv.new("UVMap")
     try:
         if kind == "cube":
-            bmesh.ops.create_cube(bm, size=size)
+            bmesh.ops.create_cube(bm, size=size, calc_uvs=True)
         elif kind == "uv_sphere":
             _bmesh_call(bmesh.ops.create_uvsphere, bm, {"radius": half},
                         u_segments=segments, v_segments=max(3, segments // 2), calc_uvs=True)
@@ -365,7 +372,7 @@ def _build_mesh(kind, size, segments):
             _bmesh_call(bmesh.ops.create_circle, bm, {"radius": half},
                         cap_ends=False, segments=segments, calc_uvs=True)
         elif kind == "monkey":
-            bmesh.ops.create_monkey(bm)
+            bmesh.ops.create_monkey(bm, calc_uvs=True)
             bmesh.ops.scale(bm, vec=(half, half, half), verts=bm.verts)
         elif kind == "torus":
             _build_torus(bm, major=half * 0.75, minor=half * 0.25, major_segments=segments,
@@ -390,11 +397,16 @@ def _build_torus(bm, major, minor, major_segments, minor_segments):
             radius = major + minor * math.cos(v)
             ring.append(bm.verts.new((radius * math.cos(u), radius * math.sin(u), minor * math.sin(v))))
         rings.append(ring)
+    uv_layer = bm.loops.layers.uv.active or bm.loops.layers.uv.new("UVMap")
     for i in range(major_segments):
         current, following = rings[i], rings[(i + 1) % major_segments]
         for j in range(minor_segments):
             k = (j + 1) % minor_segments
-            bm.faces.new((current[j], following[j], following[k], current[k]))
+            face = bm.faces.new((current[j], following[j], following[k], current[k]))
+            # Unwrap as a grid: u around the ring, v around the tube (seams at i=0, j=0).
+            corners = ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1))
+            for loop, (a, b) in zip(face.loops, corners):
+                loop[uv_layer].uv = (a / float(major_segments), b / float(minor_segments))
 
 
 def cmd_create_object(params):
@@ -661,23 +673,85 @@ def _file_path(value, name="filepath"):
     return os.path.abspath(os.path.expanduser(path))
 
 
+GEOMETRY_TYPES = ("MESH", "CURVE", "SURFACE", "META", "FONT", "VOLUME", "GPENCIL", "GREASEPENCIL",
+                  "POINTCLOUD", "CURVES")
+
+
+def _custom_properties(value):
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise CommandError("custom_properties must be an object of names to text or numbers")
+    clean = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key or len(key) > 63:
+            raise CommandError("custom property names must be 1-63 characters")
+        if not isinstance(item, (str, int, float, bool)):
+            raise CommandError("custom property %s must be text, a number, or a boolean" % key)
+        clean[key] = item
+    return clean
+
+
+def _fit_objects(objects, target_size, location):
+    """Scale the hierarchy so its largest side is target_size and stand it on location."""
+    bpy.context.view_layer.update()
+    geometry = [o for o in objects if o.type in GEOMETRY_TYPES] or list(objects)
+    bbox = _world_bbox(geometry)
+    if bbox is None:
+        return None
+    low, high = bbox
+    pivot = Vector(((low.x + high.x) / 2, (low.y + high.y) / 2, low.z))
+    largest = max((high - low).to_tuple())
+    factor = target_size / largest if target_size and largest > 1e-9 else 1.0
+    destination = Vector(location) if location else pivot
+    transform = Matrix.Translation(destination) @ Matrix.Scale(factor, 4) @ Matrix.Translation(-pivot)
+    for root in [o for o in objects if o.parent not in objects]:
+        root.matrix_world = transform @ root.matrix_world
+    bpy.context.view_layer.update()
+    return factor
+
+
+def _append_blend(path, collection, candidates):
+    """Append the first named collection present in a .blend, or every object when none is."""
+    try:
+        with bpy.data.libraries.load(path, link=False) as (source, target):
+            wanted = next((name for name in candidates if name in source.collections), None)
+            if wanted:
+                target.collections = [wanted]
+            else:
+                target.objects = list(source.objects)
+    except (OSError, RuntimeError, ValueError) as exc:
+        # Typically a file saved by a newer Blender; callers may fall back to glTF.
+        raise CommandError("could not read %s: %s" % (os.path.basename(path), exc), code="unreadable")
+    for appended in getattr(target, "collections", []) or []:
+        if appended is not None:
+            collection.children.link(appended)
+    for obj in getattr(target, "objects", []) or []:
+        if obj is not None and not obj.users_collection:
+            collection.objects.link(obj)
+
+
 def cmd_import_model(params):
     path = _file_path(params.get("filepath"))
     if not os.path.isfile(path):
         raise CommandError("file not found: %s" % path, code="not_found")
     extension = os.path.splitext(path)[1].lower()
     collection_name = _string(params.get("collection"), "collection")
+    target_size = _number(params.get("target_size"), "target_size", 0.0001, 100000)
+    location = _vector(params.get("location"), 3, "location")
+    properties = _custom_properties(params.get("custom_properties"))
+    new_name = _string(params.get("name"), "name")
     before = set(bpy.data.objects)
 
     if extension == ".blend":
         if bpy.data.filepath and os.path.samefile(path, bpy.data.filepath):
             raise CommandError("cannot import the file that is currently open")
-        with bpy.data.libraries.load(path, link=False) as (source, target):
-            target.objects = list(source.objects)
-        collection = _target_collection(collection_name)
-        for obj in target.objects:
-            if obj is not None and not obj.users_collection:
-                collection.objects.link(obj)
+        candidates = params.get("blend_collection") or []
+        if isinstance(candidates, str):
+            candidates = [candidates]
+        if not isinstance(candidates, list) or not all(isinstance(c, str) for c in candidates):
+            raise CommandError("blend_collection must be a collection name or a list of names to try")
+        _append_blend(path, _target_collection(collection_name), candidates)
     else:
         candidates = IMPORTERS.get(extension)
         if not candidates:
@@ -699,9 +773,22 @@ def cmd_import_model(params):
                         old.objects.unlink(obj)
                     collection.objects.link(obj)
 
-    imported = sorted(o.name for o in set(bpy.data.objects) - before)
+    new_objects = set(bpy.data.objects) - before
+    if not new_objects:
+        raise CommandError("%s contained no objects to import" % os.path.basename(path), code="failed")
+    scale = None
+    if target_size or location:
+        scale = _fit_objects(new_objects, target_size, location)
+    for obj in new_objects:
+        for key, value in properties.items():
+            obj[key] = value
+    roots = [o for o in new_objects if o.parent not in new_objects]
+    if new_name and len(roots) == 1:
+        roots[0].name = new_name
     _undo_push("import %s" % os.path.basename(path))
-    return {"filepath": path, "imported_objects": imported}
+    return {"filepath": path, "imported_objects": sorted(o.name for o in new_objects),
+            "root_objects": sorted(o.name for o in roots),
+            "scale_applied": round(scale, 6) if scale is not None else None}
 
 
 def cmd_export_scene(params):
@@ -804,6 +891,8 @@ def _resolve_engine(render, requested):
 
 
 def _frame_camera(scene, direction):
+    # Bounding boxes of objects created since the last depsgraph update are still empty.
+    bpy.context.view_layer.update()
     targets = [o for o in scene.objects
                if o.type in ("MESH", "CURVE", "SURFACE", "META", "FONT", "VOLUME", "GPENCIL",
                              "GREASEPENCIL", "POINTCLOUD", "CURVES")
@@ -815,7 +904,12 @@ def _frame_camera(scene, direction):
     data.clip_end = max(1000.0, radius * 20)
     camera = bpy.data.objects.new("MCP_PreviewCamera", data)
     scene.collection.objects.link(camera)
-    distance = radius / math.sin(data.angle / 2) * 1.1
+    # data.angle spans the longer side of the image; fit the sphere into the shorter side.
+    render = scene.render
+    longer = float(max(render.resolution_x, render.resolution_y))
+    shorter = float(min(render.resolution_x, render.resolution_y))
+    half_angle = math.atan(math.tan(data.angle / 2) * shorter / longer)
+    distance = radius / math.sin(half_angle) * 1.05
     camera.location = center + Vector(direction).normalized() * distance
     camera.rotation_euler = (center - camera.location).to_track_quat("-Z", "Y").to_euler()
     return camera
@@ -825,19 +919,24 @@ def _scene_has_light(scene):
     return any(o.type == "LIGHT" and o.visible_get() for o in scene.objects)
 
 
-def cmd_render_image(params):
-    scene = bpy.context.scene
-    render = scene.render
-    width = int(_number(params.get("width"), "width", 16, 4096, 640))
-    height = int(_number(params.get("height"), "height", 16, 4096, round(width * 3 / 4)))
-    samples = int(_number(params.get("samples"), "samples", 1, 4096, 16))
-    view = (_string(params.get("view"), "view") or "camera").lower()
-    camera_name = _string(params.get("camera"), "camera")
-    output = _string(params.get("filepath"), "filepath")
-    if view != "camera" and view not in VIEW_DIRECTIONS:
-        raise CommandError("view must be camera or one of: %s" % ", ".join(VIEW_DIRECTIONS))
-    engine = _resolve_engine(render, params.get("engine"))
+def _remove_temporary(objects):
+    for obj in objects:
+        obj_data = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if obj_data is not None and obj_data.users == 0:
+            if isinstance(obj_data, bpy.types.Camera):
+                bpy.data.cameras.remove(obj_data)
+            elif isinstance(obj_data, bpy.types.Light):
+                bpy.data.lights.remove(obj_data)
 
+
+@contextlib.contextmanager
+def _render_settings(scene, engine, width, height, samples):
+    """Switch render settings for a preview and restore every one of them afterwards.
+
+    Yields a list that collects temporary objects (cameras, a sun) to delete at the end.
+    """
+    render = scene.render
     saved = {
         "engine": render.engine, "x": render.resolution_x, "y": render.resolution_y,
         "percentage": render.resolution_percentage, "filepath": render.filepath,
@@ -845,44 +944,21 @@ def cmd_render_image(params):
     }
     if hasattr(scene, "cycles"):
         saved["samples"] = scene.cycles.samples
+        saved["denoising"] = scene.cycles.use_denoising
     temporary = []
-    if output:
-        path = os.path.abspath(os.path.expanduser(output))
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-    else:
-        path = os.path.join(tempfile.mkdtemp(prefix="mcp_render_"), "render.png")
     try:
-        if view == "camera":
-            if camera_name:
-                camera = _get_object(camera_name)
-                if camera.type != "CAMERA":
-                    raise CommandError("%s is not a camera" % camera_name)
-                scene.camera = camera
-            elif scene.camera is None:
-                temporary.append(_frame_camera(scene, VIEW_DIRECTIONS["iso"]))
-                scene.camera = temporary[-1]
-        else:
-            temporary.append(_frame_camera(scene, VIEW_DIRECTIONS[view]))
-            scene.camera = temporary[-1]
         if not _scene_has_light(scene) and engine != "BLENDER_WORKBENCH":
             sun = bpy.data.objects.new("MCP_PreviewSun", bpy.data.lights.new("MCP_PreviewSun", "SUN"))
             sun.data.energy = 3.0
             sun.rotation_euler = (math.radians(50), 0, math.radians(30))
             scene.collection.objects.link(sun)
             temporary.append(sun)
-
         render.engine = engine
         render.resolution_x, render.resolution_y, render.resolution_percentage = width, height, 100
         render.image_settings.file_format = "PNG"
-        render.filepath = path
         if engine == "CYCLES" and hasattr(scene, "cycles"):
             scene.cycles.samples = samples
-        with _ui_context():
-            bpy.ops.render.render(write_still=True)
-        if not os.path.exists(path):
-            raise CommandError("render finished but wrote no image", code="failed")
-        with open(path, "rb") as handle:
-            data = handle.read()
+        yield temporary
     finally:
         render.engine = saved["engine"]
         render.resolution_x, render.resolution_y = saved["x"], saved["y"]
@@ -892,19 +968,201 @@ def cmd_render_image(params):
         scene.camera = saved["camera"]
         if "samples" in saved:
             scene.cycles.samples = saved["samples"]
-        for obj in temporary:
-            obj_data = obj.data
-            bpy.data.objects.remove(obj, do_unlink=True)
-            if obj_data is not None and obj_data.users == 0:
-                if isinstance(obj_data, bpy.types.Camera):
-                    bpy.data.cameras.remove(obj_data)
-                elif isinstance(obj_data, bpy.types.Light):
-                    bpy.data.lights.remove(obj_data)
-        if not output and os.path.exists(path):
-            os.remove(path)
-            os.rmdir(os.path.dirname(path))
+            scene.cycles.use_denoising = saved["denoising"]
+        _remove_temporary(temporary)
+
+
+def _check_view(view):
+    view = (view or "camera").lower()
+    if view != "camera" and view not in VIEW_DIRECTIONS:
+        raise CommandError("view must be camera or one of: %s" % ", ".join(VIEW_DIRECTIONS))
+    return view
+
+
+def _render_view(scene, view, camera_name, path, temporary):
+    """Render one view to path; _render_settings must already be active."""
+    if view == "camera":
+        if camera_name:
+            camera = _get_object(camera_name)
+            if camera.type != "CAMERA":
+                raise CommandError("%s is not a camera" % camera_name)
+            scene.camera = camera
+        elif scene.camera is None:
+            temporary.append(_frame_camera(scene, VIEW_DIRECTIONS["iso"]))
+            scene.camera = temporary[-1]
+    else:
+        temporary.append(_frame_camera(scene, VIEW_DIRECTIONS[view]))
+        scene.camera = temporary[-1]
+    scene.render.filepath = path
+    try:
+        with _ui_context():
+            bpy.ops.render.render(write_still=True)
+    except RuntimeError as exc:
+        cycles = getattr(scene, "cycles", None)
+        if "denois" not in str(exc).lower() or cycles is None or not cycles.use_denoising:
+            raise
+        # Some Linux distribution builds lack OpenImageDenoise; preview without denoising
+        # (the user's setting is restored by _render_settings).
+        cycles.use_denoising = False
+        with _ui_context():
+            bpy.ops.render.render(write_still=True)
+    if not os.path.exists(path):
+        raise CommandError("render finished but wrote no image", code="failed")
+
+
+def _render_size(params, default_width, maximum=4096):
+    width = int(_number(params.get("width"), "width", 16, maximum, default_width))
+    height = int(_number(params.get("height"), "height", 16, maximum, round(width * 3 / 4)))
+    return width, height
+
+
+def cmd_render_image(params):
+    scene = bpy.context.scene
+    width, height = _render_size(params, 640)
+    samples = int(_number(params.get("samples"), "samples", 1, 4096, 16))
+    view = _check_view(_string(params.get("view"), "view"))
+    camera_name = _string(params.get("camera"), "camera")
+    output = _string(params.get("filepath"), "filepath")
+    engine = _resolve_engine(scene.render, params.get("engine"))
+    folder = None
+    if output:
+        path = os.path.abspath(os.path.expanduser(output))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    else:
+        folder = tempfile.mkdtemp(prefix="mcp_render_")
+        path = os.path.join(folder, "render.png")
+    try:
+        with _render_settings(scene, engine, width, height, samples) as temporary:
+            _render_view(scene, view, camera_name, path, temporary)
+        with open(path, "rb") as handle:
+            data = handle.read()
+    finally:
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
     return {"format": "png", "width": width, "height": height, "engine": engine, "view": view,
             "filepath": path if output else None, "image_base64": base64.b64encode(data).decode("ascii")}
+
+
+def _compose_grid(paths, width, height, out_path, gap=4):
+    """Tile PNGs left to right, top to bottom into one PNG. Returns the column count.
+
+    Uses the standard library's array instead of numpy: distribution builds of
+    Blender (for example Ubuntu's) run on a system Python without numpy.
+    """
+    count = len(paths)
+    columns = int(math.ceil(math.sqrt(count)))
+    rows = int(math.ceil(count / float(columns)))
+    total_width = columns * width + (columns - 1) * gap
+    total_height = rows * height + (rows - 1) * gap
+    grid = array("f", (0.12, 0.12, 0.12, 1.0)) * (total_width * total_height)
+    for index, path in enumerate(paths):
+        image = bpy.data.images.load(path)
+        try:
+            tile_width, tile_height = image.size
+            pixels = array("f", bytes(4 * tile_width * tile_height * 4))
+            image.pixels.foreach_get(pixels)
+        finally:
+            bpy.data.images.remove(image)
+        copy_rows, copy_columns = min(tile_height, height), min(tile_width, width)
+        row, column = divmod(index, columns)
+        # Blender stores image rows bottom-up, so row 0 of the grid is at the top.
+        top = total_height - row * (height + gap) - copy_rows
+        left = column * (width + gap)
+        for y in range(copy_rows):
+            source = y * tile_width * 4
+            target = ((top + y) * total_width + left) * 4
+            grid[target:target + copy_columns * 4] = pixels[source:source + copy_columns * 4]
+    image = bpy.data.images.new("MCP_Views", total_width, total_height, alpha=True)
+    try:
+        image.pixels.foreach_set(grid)
+        image.filepath_raw = out_path
+        image.file_format = "PNG"
+        image.save()
+    finally:
+        bpy.data.images.remove(image)
+    return columns
+
+
+def cmd_render_views(params):
+    scene = bpy.context.scene
+    views = params.get("views") or ["front", "right", "top", "iso"]
+    if not isinstance(views, list) or not 1 <= len(views) <= 9 or not all(isinstance(v, str) for v in views):
+        raise CommandError("views must be a list of 1-9 view names")
+    views = [_check_view(v) for v in views]
+    width, height = _render_size(params, 384, maximum=2048)
+    samples = int(_number(params.get("samples"), "samples", 1, 4096, 8))
+    camera_name = _string(params.get("camera"), "camera")
+    engine = _resolve_engine(scene.render, params.get("engine"))
+    folder = tempfile.mkdtemp(prefix="mcp_views_")
+    try:
+        paths = []
+        with _render_settings(scene, engine, width, height, samples) as temporary:
+            for index, view in enumerate(views):
+                path = os.path.join(folder, "view_%d.png" % index)
+                _render_view(scene, view, camera_name, path, temporary)
+                paths.append(path)
+        grid_path = os.path.join(folder, "views.png")
+        columns = _compose_grid(paths, width, height, grid_path)
+        with open(grid_path, "rb") as handle:
+            data = handle.read()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    layout = [views[start:start + columns] for start in range(0, len(views), columns)]
+    return {"format": "png", "views": views, "layout": layout, "tile_size": [width, height],
+            "engine": engine, "image_base64": base64.b64encode(data).decode("ascii")}
+
+
+def _capture_view3d(window, area, region, width, height, path):
+    """Draw the 3D View into an offscreen GPU buffer and save it as PNG.
+
+    Unlike a window screenshot this does not read the window's front buffer, which
+    comes back black under Xvfb, some VMs, and some remote desktops.
+    """
+    import gpu
+
+    space = area.spaces.active
+    offscreen = gpu.types.GPUOffScreen(width, height)
+    try:
+        with offscreen.bind():
+            framebuffer = gpu.state.active_framebuffer_get()
+            framebuffer.clear(color=(0.0, 0.0, 0.0, 0.0))
+            arguments = (window.scene, window.view_layer, space, region,
+                         space.region_3d.view_matrix, space.region_3d.window_matrix)
+            try:
+                offscreen.draw_view3d(*arguments, do_color_management=True)
+            except TypeError:
+                offscreen.draw_view3d(*arguments)
+            buffer = framebuffer.read_color(0, 0, width, height, 4, 0, "FLOAT")
+    finally:
+        offscreen.free()
+    buffer.dimensions = width * height * 4
+    image = bpy.data.images.new("MCP_Viewport", width, height, alpha=True)
+    try:
+        try:
+            image.pixels.foreach_set(buffer)
+        except (TypeError, ValueError):
+            image.pixels[:] = list(buffer)
+        image.filepath_raw = path
+        image.file_format = "PNG"
+        image.save()
+    finally:
+        bpy.data.images.remove(image)
+
+
+def _screenshot_area(window, area, region, path, max_size):
+    """Fallback: Blender's own area screenshot, scaled down to max_size."""
+    with bpy.context.temp_override(window=window, screen=window.screen, area=area, region=region):
+        bpy.ops.screen.screenshot_area(filepath=path)
+    image = bpy.data.images.load(path)
+    try:
+        width, height = image.size
+        factor = min(1.0, float(max_size) / max(width, height))
+        if factor < 1.0:
+            image.scale(max(1, int(width * factor)), max(1, int(height * factor)))
+            image.save()
+        return tuple(image.size)
+    finally:
+        bpy.data.images.remove(image)
 
 
 def cmd_viewport_screenshot(params):
@@ -912,36 +1170,28 @@ def cmd_viewport_screenshot(params):
         raise CommandError("viewport screenshots need the Blender UI; use render_image in background mode",
                            code="unsupported")
     max_size = int(_number(params.get("max_size"), "max_size", 64, 4096, 1024))
-    window_manager = bpy.context.window_manager
-    for window in window_manager.windows:
-        area = next((a for a in window.screen.areas if a.type == "VIEW_3D"), None)
-        if area is not None:
-            break
-    else:
+    candidates = [(window, area) for window in bpy.context.window_manager.windows
+                  for area in window.screen.areas if area.type == "VIEW_3D"]
+    if not candidates:
         raise CommandError("no 3D View is open", code="not_found")
+    window, area = max(candidates, key=lambda pair: pair[1].width * pair[1].height)
     region = next(r for r in area.regions if r.type == "WINDOW")
+    factor = min(1.0, float(max_size) / max(region.width, region.height))
+    width, height = max(1, int(region.width * factor)), max(1, int(region.height * factor))
     folder = tempfile.mkdtemp(prefix="mcp_shot_")
     path = os.path.join(folder, "viewport.png")
     try:
-        with bpy.context.temp_override(window=window, screen=window.screen, area=area, region=region):
-            bpy.ops.screen.screenshot_area(filepath=path)
-        image = bpy.data.images.load(path)
         try:
-            width, height = image.size
-            factor = min(1.0, float(max_size) / max(width, height))
-            if factor < 1.0:
-                width, height = max(1, int(width * factor)), max(1, int(height * factor))
-                image.scale(width, height)
-                image.save()
-        finally:
-            bpy.data.images.remove(image)
+            _capture_view3d(window, area, region, width, height, path)
+            method = "offscreen"
+        except Exception:
+            width, height = _screenshot_area(window, area, region, path, max_size)
+            method = "screenshot"
         with open(path, "rb") as handle:
             data = handle.read()
     finally:
-        if os.path.exists(path):
-            os.remove(path)
-        os.rmdir(folder)
-    return {"format": "png", "width": width, "height": height,
+        shutil.rmtree(folder, ignore_errors=True)
+    return {"format": "png", "width": width, "height": height, "method": method,
             "image_base64": base64.b64encode(data).decode("ascii")}
 
 
@@ -982,6 +1232,235 @@ def cmd_save_blend_file(params):
     return {"filepath": path, "copy": copy}
 
 
+def _node_tree(datablock):
+    if datablock.node_tree is None:
+        datablock.use_nodes = True
+    return datablock.node_tree
+
+
+def _existing_file(value, name="filepath"):
+    path = _file_path(value, name)
+    if not os.path.isfile(path):
+        raise CommandError("file not found: %s" % path, code="not_found")
+    return path
+
+
+def _load_image(path):
+    try:
+        return bpy.data.images.load(path, check_existing=True)
+    except RuntimeError as exc:
+        raise CommandError("cannot load image %s: %s" % (path, exc), code="unreadable")
+
+
+def cmd_set_world_hdri(params):
+    path = _existing_file(params.get("filepath"))
+    strength = _number(params.get("strength"), "strength", 0, 1e6, 1.0)
+    rotation = _number(params.get("rotation_degrees"), "rotation_degrees", -36000, 36000, 0.0)
+    name = _string(params.get("name"), "name") or os.path.splitext(os.path.basename(path))[0]
+    properties = _custom_properties(params.get("custom_properties"))
+    image = _load_image(path)
+    if params.get("pack", True) and not image.packed_file:
+        # Keeps the lighting when the .blend is reopened after caches are cleared.
+        image.pack()
+
+    world = bpy.data.worlds.new(name)
+    tree = _node_tree(world)
+    tree.nodes.clear()
+    coords = tree.nodes.new("ShaderNodeTexCoord")
+    mapping = tree.nodes.new("ShaderNodeMapping")
+    environment = tree.nodes.new("ShaderNodeTexEnvironment")
+    background = tree.nodes.new("ShaderNodeBackground")
+    output = tree.nodes.new("ShaderNodeOutputWorld")
+    for x, node in enumerate((coords, mapping, environment, background, output)):
+        node.location = (x * 250 - 500, 0)
+    environment.image = image
+    mapping.inputs["Rotation"].default_value[2] = math.radians(rotation)
+    background.inputs["Strength"].default_value = strength
+    tree.links.new(coords.outputs["Generated"], mapping.inputs["Vector"])
+    tree.links.new(mapping.outputs["Vector"], environment.inputs["Vector"])
+    tree.links.new(environment.outputs["Color"], background.inputs["Color"])
+    tree.links.new(background.outputs["Background"], output.inputs["Surface"])
+    for key, value in properties.items():
+        world[key] = value
+    previous = bpy.context.scene.world
+    if previous is not None:
+        previous.use_fake_user = True  # otherwise it is dropped on save once unused
+    bpy.context.scene.world = world
+    _undo_push("world %s" % world.name)
+    return {"world": world.name, "image": image.name, "packed": bool(image.packed_file),
+            "strength": strength, "rotation_degrees": rotation,
+            "previous_world": previous.name if previous is not None else None}
+
+
+TEXTURE_ROLES = ("base_color", "roughness", "metallic", "normal", "displacement", "alpha", "emission", "ao")
+
+
+def _set_colorspace(image, is_color):
+    for name in (("sRGB",) if is_color else ("Non-Color", "Linear", "Raw")):
+        try:
+            image.colorspace_settings.name = name
+            return
+        except TypeError:
+            continue
+
+
+def cmd_create_pbr_material(params):
+    name = _string(params.get("name"), "name", required=True)
+    maps = params.get("maps")
+    if not isinstance(maps, dict) or not maps:
+        raise CommandError("maps must map texture roles (%s) to image paths" % ", ".join(TEXTURE_ROLES))
+    unknown = [role for role in maps if role not in TEXTURE_ROLES]
+    if unknown:
+        raise CommandError("unknown texture roles: %s; valid: %s" % (", ".join(unknown), ", ".join(TEXTURE_ROLES)))
+    paths = {role: _existing_file(path, role) for role, path in maps.items()}
+    names = params.get("apply_to") or []
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise CommandError("apply_to must be a list of object names")
+    objects = [_get_object(n) for n in names]
+    for obj in objects:
+        if obj.data is None or not hasattr(obj.data, "materials"):
+            raise CommandError("object %s cannot hold materials" % obj.name)
+    uv_scale = _number(params.get("uv_scale"), "uv_scale", 0.0001, 10000, 1.0)
+    displacement_scale = _number(params.get("displacement_scale"), "displacement_scale", 0, 100, 0.05)
+    properties = _custom_properties(params.get("custom_properties"))
+
+    material = bpy.data.materials.new(name)
+    principled = _principled(material)
+    tree = material.node_tree
+    output = next(n for n in tree.nodes if n.type == "OUTPUT_MATERIAL")
+    coords = tree.nodes.new("ShaderNodeTexCoord")
+    mapping = tree.nodes.new("ShaderNodeMapping")
+    coords.location, mapping.location = (-1100, 0), (-900, 0)
+    mapping.inputs["Scale"].default_value = (uv_scale, uv_scale, uv_scale)
+    tree.links.new(coords.outputs["UV"], mapping.inputs["Vector"])
+
+    # Image textures and tangent-space normal maps need a UV map. Without one on every
+    # target, fall back to box projection from generated coordinates and skip normals.
+    missing_uvs = [o.name for o in objects if o.type == "MESH" and not o.data.uv_layers]
+    warnings = []
+    if missing_uvs:
+        warnings.append("no UV map on %s: used box projection and skipped the normal map"
+                        % ", ".join(missing_uvs))
+        tree.links.new(coords.outputs["Generated"], mapping.inputs["Vector"])
+
+    used, ignored = [], []
+    for row, role in enumerate(r for r in TEXTURE_ROLES if r in paths):
+        if role == "ao" or (role == "normal" and missing_uvs):
+            # Principled BSDF has no AO input; Blender computes occlusion itself.
+            ignored.append(role)
+            continue
+        image = _load_image(paths[role])
+        _set_colorspace(image, role in ("base_color", "emission"))
+        texture = tree.nodes.new("ShaderNodeTexImage")
+        texture.image = image
+        texture.location = (-650, 300 - row * 280)
+        if missing_uvs:
+            texture.projection = "BOX"
+            texture.projection_blend = 0.2
+        tree.links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
+        if role == "normal":
+            normal_map = tree.nodes.new("ShaderNodeNormalMap")
+            normal_map.location = (-300, 300 - row * 280)
+            tree.links.new(texture.outputs["Color"], normal_map.inputs["Color"])
+            tree.links.new(normal_map.outputs["Normal"], principled.inputs["Normal"])
+        elif role == "displacement":
+            displacement = tree.nodes.new("ShaderNodeDisplacement")
+            displacement.location = (-300, 300 - row * 280)
+            displacement.inputs["Scale"].default_value = displacement_scale
+            displacement.inputs["Midlevel"].default_value = 0.5
+            tree.links.new(texture.outputs["Color"], displacement.inputs["Height"])
+            tree.links.new(displacement.outputs["Displacement"], output.inputs["Displacement"])
+        else:
+            socket_names = {
+                "base_color": ["Base Color"], "roughness": ["Roughness"], "metallic": ["Metallic"],
+                "alpha": ["Alpha"], "emission": ["Emission Color", "Emission"],
+            }[role]
+            target = next((principled.inputs.get(n) for n in socket_names if principled.inputs.get(n)), None)
+            if target is None:
+                ignored.append(role)
+                continue
+            tree.links.new(texture.outputs["Color"], target)
+        used.append(role)
+
+    for key, value in properties.items():
+        material[key] = value
+    for obj in objects:
+        if obj.data.materials:
+            obj.data.materials[0] = material
+        else:
+            obj.data.materials.append(material)
+    _undo_push("material %s" % material.name)
+    return {"material": material.name, "maps": used, "ignored": ignored,
+            "assigned_to": [o.name for o in objects], "warnings": warnings}
+
+
+def _upload_root():
+    return os.path.join(tempfile.gettempdir(), "blender_mcp_uploads")
+
+
+def _safe_relpath(value):
+    """A relative path that cannot leave its folder (no absolute paths, drives, or '..')."""
+    if not isinstance(value, str) or not value or "\x00" in value or len(value) > 512:
+        raise CommandError("relpath must be a non-empty relative path")
+    parts = re.split(r"[\\/]+", value)
+    if (value.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", value)
+            or any(part in ("", ".", "..") for part in parts)):
+        raise CommandError("unsafe relative path: %r" % value)
+    return os.path.join(*parts)
+
+
+def cmd_stat_file(params):
+    path = _file_path(params.get("filepath"))
+    exists = os.path.isfile(path)
+    return {"filepath": path, "exists": exists, "size": os.path.getsize(path) if exists else None}
+
+
+def cmd_receive_file(params):
+    """Write one chunk of a file sent by the MCP server (for Blender on another machine)."""
+    transfer = _string(params.get("transfer_id"), "transfer_id", required=True)
+    if not re.match(r"^[0-9a-f]{8,64}$", transfer):
+        raise CommandError("transfer_id must be 8-64 lowercase hex characters")
+    relpath = _safe_relpath(params.get("relpath"))
+    offset = int(_number(params.get("offset"), "offset", 0, 1 << 40, 0))
+    try:
+        data = base64.b64decode(params.get("data_base64") or "", validate=True)
+    except (TypeError, ValueError):
+        raise CommandError("data_base64 is not valid base64")
+    root = os.path.join(_upload_root(), transfer)
+    path = os.path.join(root, relpath)
+    current = os.path.getsize(path) if os.path.exists(path) else 0
+    if offset and offset != current:  # offset 0 always (re)starts the file
+        raise CommandError("chunk for %s starts at %d but %d bytes are stored" % (relpath, offset, current),
+                           code="out_of_order")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "ab" if offset else "wb") as handle:
+        handle.write(data)
+    return {"filepath": path, "size": os.path.getsize(path), "root": root}
+
+
+def _history(params, operator_name):
+    if bpy.app.background:
+        raise CommandError("undo and redo need the Blender UI; background mode keeps no undo history",
+                           code="unsupported")
+    steps = int(_number(params.get("steps"), "steps", 1, 100, 1))
+    done = 0
+    with _ui_context():
+        operator = getattr(bpy.ops.ed, operator_name)
+        for _ in range(steps):
+            if not operator.poll() or "FINISHED" not in operator():
+                break
+            done += 1
+    return {"steps": done}
+
+
+def cmd_undo(params):
+    return _history(params, "undo")
+
+
+def cmd_redo(params):
+    return _history(params, "redo")
+
+
 COMMANDS = {
     "ping": cmd_ping,
     "get_bridge_status": cmd_get_bridge_status,
@@ -996,9 +1475,16 @@ COMMANDS = {
     "import_model": cmd_import_model,
     "export_scene": cmd_export_scene,
     "render_image": cmd_render_image,
+    "render_views": cmd_render_views,
     "viewport_screenshot": cmd_viewport_screenshot,
     "execute_code": cmd_execute_code,
     "save_blend_file": cmd_save_blend_file,
+    "set_world_hdri": cmd_set_world_hdri,
+    "create_pbr_material": cmd_create_pbr_material,
+    "stat_file": cmd_stat_file,
+    "receive_file": cmd_receive_file,
+    "undo": cmd_undo,
+    "redo": cmd_redo,
 }
 
 

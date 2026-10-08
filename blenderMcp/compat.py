@@ -10,12 +10,12 @@ import inspect
 from importlib import metadata
 
 try:  # mcp >= 2
-    from mcp.server.mcpserver import Image, MCPServer as _Server
+    from mcp.server.mcpserver import Context, Image, MCPServer as _Server
     from mcp.server.mcpserver.exceptions import ToolError
 
     SDK_MAJOR = 2
 except ImportError:  # mcp 1.x
-    from mcp.server.fastmcp import FastMCP as _Server, Image
+    from mcp.server.fastmcp import Context, FastMCP as _Server, Image
     from mcp.server.fastmcp.exceptions import ToolError
 
     SDK_MAJOR = 1
@@ -27,7 +27,8 @@ except ImportError:  # very old 1.x releases
 
 TRANSPORTS = ("stdio", "sse", "streamable-http")
 
-__all__ = ["Image", "ToolError", "SDK_MAJOR", "TRANSPORTS", "create_server", "sdk_version", "tool", "run"]
+__all__ = ["Context", "Image", "ToolError", "SDK_MAJOR", "TRANSPORTS", "create_server", "sdk_version", "tool",
+           "resource", "prompt", "report_progress", "run"]
 
 
 def sdk_version() -> str:
@@ -61,6 +62,29 @@ def tool(server, *, title: str, read_only: bool = False, destructive: bool = Fal
             openWorldHint=open_world,
         )
     return server.tool(**kwargs)
+
+
+def resource(server, uri: str, *, name: str, description: str, mime_type: str = "text/markdown"):
+    accepted = inspect.signature(server.resource).parameters
+    options = {"name": name, "description": description, "mime_type": mime_type}
+    return server.resource(uri, **{k: v for k, v in options.items() if k in accepted})
+
+
+def prompt(server, *, name: str, description: str):
+    return server.prompt(name=name, description=description)
+
+
+async def report_progress(ctx, progress: float, total: float = 1.0, message: str = "") -> None:
+    """Send a progress notification when the client asked for them; never fail the tool."""
+    if ctx is None:
+        return
+    try:
+        try:
+            await ctx.report_progress(progress, total, message or None)
+        except TypeError:  # mcp < 1.13 has no message argument
+            await ctx.report_progress(progress, total)
+    except Exception:
+        pass
 
 
 def run(server, transport: str = "stdio", host: str = "127.0.0.1", port: int = 8000) -> None:

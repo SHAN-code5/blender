@@ -87,3 +87,45 @@ def install_addon(target_dir: Path) -> Path:
         if path.suffix == ".py":
             shutil.copy2(path, destination / path.name)
     return destination
+
+
+_BRIDGE_VERSION = re.compile(r'^BRIDGE_VERSION = "([^"]+)"', re.M)
+
+
+def version_tuple(version: str):
+    return tuple(int(part) if part.isdigit() else 0 for part in version.split("."))
+
+
+def installed_copies(platform: Optional[str] = None, environ=None, home: Optional[Path] = None) -> List[Path]:
+    """Every folder holding an installed copy of the add-on (legacy add-on or 4.2+ extension)."""
+    environ = os.environ if environ is None else environ
+    candidates = []
+    if environ.get("BLENDER_USER_SCRIPTS"):
+        candidates.append(Path(environ["BLENDER_USER_SCRIPTS"]) / "addons" / ADDON_ID)
+    if environ.get("BLENDER_USER_EXTENSIONS"):
+        candidates.append(Path(environ["BLENDER_USER_EXTENSIONS"]) / "user_default" / ADDON_ID)
+    root = blender_config_root(platform, environ, home)
+    for version in installed_versions(root):
+        candidates.append(root / version / "scripts" / "addons" / ADDON_ID)
+        candidates.append(root / version / "extensions" / "user_default" / ADDON_ID)
+    return [c for c in candidates if (c / "__init__.py").is_file()]
+
+
+def installed_version(folder: Path) -> Optional[str]:
+    try:
+        match = _BRIDGE_VERSION.search((Path(folder) / "__init__.py").read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return match.group(1) if match else None
+
+
+def update_copy(folder: Path) -> Path:
+    """Overwrite an installed copy with this version, keeping __init__.py.bak. Returns the backup."""
+    folder = Path(folder)
+    backup = folder / "__init__.py.bak"
+    shutil.copy2(folder / "__init__.py", backup)
+    is_extension = (folder / "blender_manifest.toml").exists()
+    for path in addon_files():
+        if path.suffix == ".py" or is_extension:
+            shutil.copy2(path, folder / path.name)
+    return backup
