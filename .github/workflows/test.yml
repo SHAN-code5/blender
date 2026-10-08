@@ -77,21 +77,23 @@ jobs:
         run: pytest -q tests/blenderBridgeAddon.py tests/blenderBridge.py tests/blenderBridgeAssets.py
 
   # The add-on in Blender's UI: Ubuntu's Blender 4.0 (legacy add-on path) under Xvfb.
+  # No setup-python here: Ubuntu's Blender embeds the system libpython and takes its
+  # prefix from the first python3.12 on PATH, so a toolcache Python would hide numpy.
   blender-ui:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - name: Install Blender and a virtual display
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends blender python3-numpy xvfb xauth libgl1-mesa-dri
+          sudo apt-get install -y --no-install-recommends \
+            blender python3-numpy python3-venv xvfb xauth libgl1-mesa-dri
       - name: Install the MCP SDK
-        run: pip install "mcp>=2,<3"
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install "mcp>=2,<3"
       - name: Run the UI checks
-        run: xvfb-run -a -s "-screen 0 1280x800x24" python checks/blenderMcpUi.py --blender blender --artifacts ui-artifacts
+        run: xvfb-run -a -s "-screen 0 1280x800x24" .venv/bin/python checks/blenderMcpUi.py --blender blender --artifacts ui-artifacts
       - name: Keep screenshots and renders
         if: always()
         uses: actions/upload-artifact@v4

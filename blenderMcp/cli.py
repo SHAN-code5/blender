@@ -95,10 +95,17 @@ def _err(message: str) -> None:
     print(message, file=sys.stderr)
 
 
-def cmd_serve(args) -> int:
-    from .server import main as serve
+SDK_HINT = 'pip install "mcp>=1.10,<3"'
 
-    serve(load_settings(args))
+
+def cmd_serve(args) -> int:
+    settings = load_settings(args)  # report configuration errors before importing the SDK
+    try:
+        from .server import main as serve
+    except ImportError as exc:
+        _err(f"The MCP SDK is not installed ({exc}). Install it with: {SDK_HINT}")
+        return 1
+    serve(settings)
     return 0
 
 
@@ -198,13 +205,19 @@ def cmd_headless(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    from . import compat
     from .connection import BlenderConnection, BlenderError
 
     settings = load_settings(args)
+    healthy = True
     print(f"blender-mcp-bridge {__version__}")
     print(f"Python {platform.python_version()} on {platform.system()} {platform.machine()}")
-    print(f"MCP SDK {compat.sdk_version()} (API v{compat.SDK_MAJOR})")
+    try:
+        from . import compat
+
+        print(f"MCP SDK {compat.sdk_version()} (API v{compat.SDK_MAJOR})")
+    except ImportError:
+        print(f"MCP SDK: NOT INSTALLED - the server cannot run until you {SDK_HINT}")
+        healthy = False
     print(f"Blender bridge address {settings.host}:{settings.port}, token {'set' if settings.token else 'not set'}")
     keys = {"Sketchfab": settings.sketchfab_api_key, "Poly Pizza": settings.polypizza_api_key,
             "Tripo": settings.tripo_api_key, "Hyper3D": settings.hyper3d_api_key}
@@ -221,8 +234,8 @@ def cmd_doctor(args) -> int:
           f"python execution {'on' if status['code_execution_allowed'] else 'off'})")
     if status.get("bridge_version") != __version__:
         print(f"Warning: add-on version {status.get('bridge_version')} differs from server {__version__}; "
-              "run install-addon to update it.")
-    return 0
+              "run `blender-mcp-bridge update` to update it.")
+    return 0 if healthy else 1
 
 
 HANDLERS = {
