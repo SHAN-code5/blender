@@ -392,7 +392,7 @@ report any mismatch you hit.
 | `Blender did not answer within ...` | Blender is busy (rendering, a dialog, a long script). Retry or raise `timeout_seconds` |
 | `eevee needs a GPU` | Headless without a GPU: use `engine="cycles"`, or start with `--gpu` if there is one |
 | `Could not listen on the configured port` | Another Blender already uses it; pick another port |
-| glTF import/export fails with `No module named 'numpy'` | Blender's own glTF add-on needs numpy. Official builds include it; on a distribution build (for example Ubuntu's `blender` package) install `python3-numpy` |
+| glTF import/export fails with `No module named 'numpy'` | Blender's own glTF add-on needs numpy. Official builds include it; on a distribution build (for example Ubuntu's `blender` package) install `python3-numpy`, and make sure no other `python3.x` (pyenv, uv, conda) comes first on `PATH`: such builds take their Python from it |
 | Sketchfab import asks for a key | Set `BLENDER_MCP_SKETCHFAB_API_KEY` in the client entry's `env` |
 | Poly Pizza download blocked | `static.poly.pizza` challenges datacenter and VPN addresses; retry from a home connection |
 | `generate_3d` returned a `job_id` | Normal for long jobs: call `get_generation_status(job_id)` |

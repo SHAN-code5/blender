@@ -360,6 +360,27 @@ def check_cli_doctor_reports_missing_blender(capsys):
     assert "NOT CONNECTED" in capsys.readouterr().out
 
 
+def _hide_module(monkeypatch, name):
+    """Make ``from blenderMcp import <name>`` fail as it does when the mcp SDK is missing."""
+    import sys
+
+    monkeypatch.delattr(blenderMcp, name, raising=False)
+    monkeypatch.setitem(sys.modules, f"blenderMcp.{name}", None)
+
+
+def check_cli_serve_explains_a_missing_sdk(monkeypatch, capsys):
+    _hide_module(monkeypatch, "server")
+    assert cli.main(["serve"]) == 1
+    assert 'pip install "mcp>=1.10,<3"' in capsys.readouterr().err
+
+
+def check_cli_doctor_works_without_the_sdk(monkeypatch, capsys):
+    _hide_module(monkeypatch, "compat")
+    assert cli.main(["doctor", "--port", str(_unused_port())]) == 1
+    out = capsys.readouterr().out
+    assert "MCP SDK: NOT INSTALLED" in out and "NOT CONNECTED" in out
+
+
 def check_cli_build_and_install(tmp_path, capsys):
     assert cli.main(["build-addon", "--out", str(tmp_path / "dist")]) == 0
     assert cli.main(["install-addon", "--dest", str(tmp_path / "addons")]) == 0

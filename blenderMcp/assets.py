@@ -521,9 +521,10 @@ class PolyPizza:
                                  "addresses). Retry from a home connection.") from exc
             raise _net_error("Poly Pizza", exc) from exc
         with open(path, "rb") as handle:
-            if handle.read(4) != b"glTF":
-                path.unlink(missing_ok=True)
-                raise AssetError("Poly Pizza returned a file that is not a GLB")
+            magic = handle.read(4)
+        if magic != b"glTF":  # checked after closing: Windows cannot delete an open file
+            path.unlink(missing_ok=True)
+            raise AssetError("Poly Pizza returned a file that is not a GLB")
         licence = summary.get("license") or ""
         attribution = {
             "url": f"https://poly.pizza/m/{model_id}",
