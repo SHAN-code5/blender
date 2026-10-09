@@ -7,6 +7,7 @@ TOPICS = {
     "modeling": "Primitives, sizes, placement, and the most useful modifiers with their settings",
     "materials": "Material values for common surfaces, color formats, and PBR textures",
     "lighting": "Lighting, cameras, and rendering previews",
+    "animation": "Keyframes, turntables, the timeline, and rendering video or GIFs",
     "python": "Writing execute_blender_code scripts and API differences between Blender versions",
     "assets": "Asset libraries (Poly Haven, Sketchfab, Poly Pizza) and AI model generation",
 }

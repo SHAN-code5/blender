@@ -33,7 +33,7 @@ You need Blender and [uv](https://docs.astral.sh/uv/) (or Python 3.10+ with pip)
 3. Restart the client and ask for a scene. Check the connection any time with
    `... blender-mcp-bridge doctor`.
 
-Everything else (all 22 tools, headless Blender, API keys, security, compatibility,
+Everything else (all 30 tools, headless Blender, API keys, security, compatibility,
 troubleshooting) is in [blenderMcp/README.md](blenderMcp/README.md).
 
 ## AI 3D Object Generator

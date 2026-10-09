@@ -11,10 +11,10 @@ import base64
 import json
 import time
 from functools import partial
-from typing import Annotated, Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 import anyio
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from . import __version__, compat, guides, net
 from .assets import AssetError, FetchedAsset, PolyHaven, PolyPizza, Sketchfab
@@ -32,12 +32,16 @@ Workflow:
 2. Prefer the structured tools (create_object, modify_object, set_material,
    add_modifier, import_model, export_scene) over execute_blender_code; they
    validate input, work across Blender versions, and are one undo step each.
-3. Check your work visually with render_views (several angles in one image),
+3. Light and frame it: setup_lighting (presets) or set_light, and set_camera
+   (auto-frame from a side, or aim at a target).
+4. Check your work visually with render_views (several angles in one image),
    render_image, or viewport_screenshot (UI only), and fix what looks wrong.
-4. For realistic content: search_assets + import_asset (Poly Haven HDRIs,
+5. Animate with insert_keyframes or create_turntable, then render_animation
+   (mp4, gif, or png frames; you get a contact sheet of frames back).
+6. For realistic content: search_assets + import_asset (Poly Haven HDRIs,
    textures and models; Sketchfab; Poly Pizza) or generate_3d (AI models).
-5. get_guide has short guides: workflow, modeling, materials, lighting,
-   python, assets. Read the relevant one before an unfamiliar task.
+7. get_guide has short guides: workflow, modeling, materials, lighting,
+   animation, python, assets. Read the relevant one before an unfamiliar task.
 
 Conventions: meters, Z up, front view looks along +Y, rotations in degrees
 (XYZ), colors '#RRGGBB' (sRGB) or [r, g, b] linear 0-1. Save with
@@ -53,8 +57,27 @@ RenderView = Literal["camera", "front", "back", "left", "right", "top", "iso"]
 RenderEngine = Literal["auto", "current", "cycles", "eevee", "workbench"]
 AssetSource = Literal["polyhaven", "sketchfab", "polypizza"]
 PolyHavenType = Literal["hdris", "textures", "models"]
-GuideTopic = Literal["workflow", "modeling", "materials", "lighting", "python", "assets"]
+GuideTopic = Literal["workflow", "modeling", "materials", "lighting", "animation", "python", "assets"]
 GeneratorName = Literal["tripo", "hyper3d", "custom_api", "mock"]
+LightKind = Literal["point", "sun", "spot", "area"]
+LightingPreset = Literal["three_point", "studio", "outdoor", "dramatic"]
+CameraView = Literal["front", "back", "left", "right", "top", "iso"]
+Target = Union[str, Vector3]
+Interpolation = Literal["bezier", "linear", "constant"]
+TurntableMode = Literal["camera", "object"]
+AnimationFormat = Literal["mp4", "gif", "png"]
+
+
+class Keyframe(BaseModel):
+    """What an object looks like at one frame; only the fields given are keyed."""
+
+    frame: float
+    location: Optional[Vector3] = None
+    rotation_degrees: Optional[Vector3] = None
+    scale: Optional[Vector3] = None
+    visible: Optional[bool] = None
+    data: Optional[Dict[str, Any]] = Field(
+        None, description="Light/camera data properties, e.g. {'energy': 800} or {'lens': 35}")
 
 
 def _drop_none(params: dict) -> dict:
@@ -335,6 +358,155 @@ def build_server(settings: Optional[Settings] = None, connection: Optional[Blend
         mode use render_image."""
         return _image_result(await call("viewport_screenshot", {"max_size": max_size}), "viewport")
 
+    # ---- lights, cameras, animation -----------------------------------------
+
+    @compat.tool(server, title="Add or change a light", idempotent=True)
+    async def set_light(
+        name: Annotated[Optional[str], Field(description="Light to change; created when no object has this name")] = None,
+        kind: Optional[LightKind] = None,
+        energy: Annotated[Optional[float], Field(ge=0, description="Watts (point, spot, area) or W/m2 for sun (3-5 is daylight)")] = None,
+        color: Annotated[Optional[Any], Field(description="'#RRGGBB' (sRGB) or [r, g, b] linear 0-1")] = None,
+        temperature_kelvin: Annotated[Optional[float], Field(ge=1000, le=40000, description="Color as a temperature instead: 2700 warm bulb, 5500 daylight, 8000 shade")] = None,
+        size: Annotated[Optional[float], Field(ge=0, description="Softness: area side or point/spot radius in meters; sun angle in degrees")] = None,
+        spot_angle_degrees: Annotated[Optional[float], Field(ge=1, le=180)] = None,
+        spot_blend: Annotated[Optional[float], Field(ge=0, le=1, description="Spot edge softness")] = None,
+        location: Optional[Vector3] = None,
+        rotation_degrees: Optional[Vector3] = None,
+        target: Annotated[Optional[Target], Field(description="Aim at an object (its center) or an [x, y, z] point")] = None,
+        track: Annotated[Optional[bool], Field(description="Keep aiming at the target object as things move (false removes)")] = None,
+        collection: Optional[str] = None,
+    ) -> dict:
+        """Create a point, sun, spot, or area light, or change an existing one. Only the fields
+        you pass change; target turns it toward an object or point."""
+        return await call("set_light", {
+            "name": name, "kind": kind, "energy": energy, "color": color,
+            "temperature_kelvin": temperature_kelvin, "size": size, "spot_angle_degrees": spot_angle_degrees,
+            "spot_blend": spot_blend, "location": location, "rotation_degrees": rotation_degrees,
+            "target": target, "track": track, "collection": collection,
+        })
+
+    @compat.tool(server, title="Light the scene with a preset")
+    async def setup_lighting(
+        preset: LightingPreset = "three_point",
+        target: Annotated[Optional[List[str]], Field(description="Objects to light; default: all visible geometry")] = None,
+        strength: Annotated[float, Field(gt=0, le=100, description="Multiplies every light's power")] = 1.0,
+        azimuth_degrees: Annotated[float, Field(ge=-360, le=360, description="Turn the rig around the subject")] = 0.0,
+        world: Annotated[Optional[bool], Field(description="Also set a matching world background. Default: yes, unless the world is an HDRI or sky")] = None,
+        replace: Annotated[bool, Field(description="Remove the lights of an earlier setup_lighting call")] = True,
+    ) -> dict:
+        """Place a lighting rig sized to the subject and oriented to the scene camera:
+        three_point (key, fill, rim), studio (soft, bright, light-gray background), outdoor
+        (sun and sky), or dramatic (warm hard key, cool rim, dark background). Lists the
+        scene's other lights so you can hide them."""
+        return await call("setup_lighting", {
+            "preset": preset, "target": target, "strength": strength, "azimuth_degrees": azimuth_degrees,
+            "world": world, "replace": replace,
+        })
+
+    @compat.tool(server, title="Add or aim a camera", idempotent=True)
+    async def set_camera(
+        name: Annotated[Optional[str], Field(description="Camera to change (default: the scene camera); created if missing")] = None,
+        view: Annotated[Optional[CameraView], Field(description="Auto-place: frame `fit` (default: all visible geometry) from this side")] = None,
+        fit: Annotated[Optional[List[str]], Field(description="Objects that must be in frame when view is given")] = None,
+        location: Optional[Vector3] = None,
+        target: Annotated[Optional[Target], Field(description="Look at an object (its center) or an [x, y, z] point")] = None,
+        track: Annotated[Optional[bool], Field(description="Keep looking at the target object as things move (false removes)")] = None,
+        rotation_degrees: Optional[Vector3] = None,
+        lens: Annotated[Optional[float], Field(gt=0, description="Focal length in mm: 24 wide, 50 natural, 85+ portrait/product")] = None,
+        margin: Annotated[float, Field(ge=1, le=10, description="Space around the framed objects")] = 1.1,
+        focus: Annotated[Optional[Any], Field(description="Depth of field: object name or distance in meters to keep sharp")] = None,
+        fstop: Annotated[Optional[float], Field(gt=0, le=128, description="Aperture: lower blurs more (1.4 strong, 8 subtle)")] = None,
+        depth_of_field: Annotated[Optional[bool], Field(description="false turns depth of field off")] = None,
+        resolution: Annotated[Optional[List[int]], Field(min_length=2, max_length=2, description="Scene render size [width, height]; sets the aspect ratio")] = None,
+        make_active: Annotated[bool, Field(description="Make it the scene camera")] = True,
+        collection: Optional[str] = None,
+    ) -> dict:
+        """Create or move a camera: auto-frame objects from a side (view + fit), or place it
+        at a location looking at a target. Also sets lens, depth of field, and resolution."""
+        return await call("set_camera", {
+            "name": name, "view": view, "fit": fit, "location": location, "target": target, "track": track,
+            "rotation_degrees": rotation_degrees, "lens": lens, "margin": margin, "focus": focus,
+            "fstop": fstop, "depth_of_field": depth_of_field, "resolution": resolution,
+            "make_active": make_active, "collection": collection,
+        })
+
+    @compat.tool(server, title="Animate with keyframes")
+    async def insert_keyframes(
+        object_name: str,
+        keyframes: Annotated[List[Keyframe], Field(min_length=1, max_length=1000)],
+        interpolation: Annotated[Interpolation, Field(description="bezier eases in and out, linear is constant speed, constant jumps")] = "bezier",
+        extend_timeline: Annotated[bool, Field(description="Grow the scene frame range to include these frames")] = True,
+    ) -> dict:
+        """Keyframe an object's location, rotation, scale, visibility, or a property of its
+        light/camera data (e.g. {"energy": 500}, {"lens": 35}) at given frames. Rotations keep
+        full turns, so 0 -> 360 spins once."""
+        frames = [key.model_dump(exclude_none=True) for key in keyframes]
+        return await call("insert_keyframes", {"object_name": object_name, "keyframes": frames,
+                                               "interpolation": interpolation,
+                                               "extend_timeline": extend_timeline})
+
+    @compat.tool(server, title="Remove animation", destructive=True)
+    async def clear_animation(object_names: Annotated[List[str], Field(min_length=1)]) -> dict:
+        """Delete all keyframes of these objects (and of their light/camera data)."""
+        return await call("clear_animation", {"object_names": object_names})
+
+    @compat.tool(server, title="Set the timeline", idempotent=True)
+    async def set_timeline(
+        frame_start: Annotated[Optional[int], Field(ge=0)] = None,
+        frame_end: Annotated[Optional[int], Field(ge=0)] = None,
+        fps: Annotated[Optional[int], Field(ge=1, le=240)] = None,
+        frame_current: Optional[int] = None,
+    ) -> dict:
+        """Set the scene's frame range, frame rate, or current frame; returns the duration."""
+        return await call("set_timeline", {"frame_start": frame_start, "frame_end": frame_end, "fps": fps,
+                                           "frame_current": frame_current})
+
+    @compat.tool(server, title="Create a turntable")
+    async def create_turntable(
+        target: Annotated[Optional[List[str]], Field(description="Objects to show; default: all visible geometry")] = None,
+        mode: Annotated[TurntableMode, Field(description="camera orbits the subject; object spins one object in place")] = "camera",
+        frames: Annotated[int, Field(ge=2, le=100000, description="Frames per full loop (120 = 5 s at 24 fps)")] = 120,
+        turns: Annotated[float, Field(ge=-100, le=100, description="Turns per loop; negative goes clockwise")] = 1.0,
+        frame_start: Annotated[int, Field(ge=0)] = 1,
+        elevation_degrees: Annotated[float, Field(ge=-89, le=89, description="Camera height angle (camera mode)")] = 20.0,
+        lens: Annotated[float, Field(gt=0, description="Camera focal length in mm (camera mode)")] = 50.0,
+        margin: Annotated[float, Field(ge=1, le=10)] = 1.1,
+    ) -> dict:
+        """Make a seamless 360-degree loop: a camera orbiting the subject (made the scene
+        camera) or one object spinning. Sets the frame range; then call render_animation."""
+        return await call("create_turntable", {
+            "target": target, "mode": mode, "frames": frames, "turns": turns, "frame_start": frame_start,
+            "elevation_degrees": elevation_degrees, "lens": lens, "margin": margin,
+        })
+
+    @compat.tool(server, title="Render an animation", open_world=True)
+    async def render_animation(
+        format: Annotated[AnimationFormat, Field(description="mp4 video, gif (short loops, palette colors), or png frames")] = "mp4",
+        filepath: Annotated[Optional[str], Field(description="Output file (folder for png); default: mcp_renders/ next to the .blend or in temp")] = None,
+        frame_start: Optional[int] = None,
+        frame_end: Optional[int] = None,
+        frame_step: Annotated[int, Field(ge=1, le=1000, description="Render every Nth frame (playback keeps real time)")] = 1,
+        fps: Annotated[Optional[int], Field(ge=1, le=240, description="Default: the scene's frame rate")] = None,
+        width: Annotated[Optional[int], Field(ge=16, le=4096, description="Default: 960 (mp4/png) or 320 (gif)")] = None,
+        height: Annotated[Optional[int], Field(ge=16, le=4096, description="Default: keeps the scene's aspect ratio")] = None,
+        engine: RenderEngine = "auto",
+        samples: Annotated[Optional[int], Field(ge=1, le=4096, description="Cycles samples per frame (default 16)")] = None,
+        camera: Annotated[Optional[str], Field(description="Camera to render through (default: the scene camera)")] = None,
+        preview_frames: Annotated[int, Field(ge=0, le=16, description="Frames shown back to you as one image (0 for none)")] = 6,
+        timeout_seconds: Annotated[float, Field(gt=0, le=3600)] = 1800,
+    ) -> list:
+        """Render the frame range to a video, GIF, or PNG frames where Blender runs, and return
+        a contact sheet of evenly spaced frames so you can check the motion. Blender is busy
+        while it renders: keep sizes and samples small for previews."""
+        result = await call("render_animation", {
+            "format": format, "filepath": filepath, "frame_start": frame_start, "frame_end": frame_end,
+            "frame_step": frame_step, "fps": fps, "width": width, "height": height, "engine": engine,
+            "samples": samples, "camera": camera, "preview_frames": preview_frames,
+        }, timeout=timeout_seconds)
+        if "image_base64" in result:
+            return _image_result(result, "animation")
+        return [f"animation: {json.dumps(result)}"]
+
     # ---- python ------------------------------------------------------------
 
     @compat.tool(server, title="Run Blender Python", destructive=True, open_world=True)
@@ -531,7 +703,7 @@ def build_server(settings: Optional[Settings] = None, connection: Optional[Blend
     @compat.tool(server, title="Read a guide", read_only=True, idempotent=True)
     async def get_guide(topic: GuideTopic) -> str:
         """Short guide for working in Blender through these tools: workflow (start here),
-        modeling, materials, lighting (and cameras/rendering), python, assets."""
+        modeling, materials, lighting (and cameras/rendering), animation, python, assets."""
         return guides.load(topic)
 
     def guide_reader(topic: str):

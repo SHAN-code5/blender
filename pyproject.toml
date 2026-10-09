@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # itself is built separately with Blender's extension tooling.
 [project]
 name = "blender-mcp-bridge"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server that lets Claude and other MCP clients inspect and edit Blender scenes"
 readme = "blenderMcp/README.md"
 requires-python = ">=3.10"
