@@ -429,11 +429,10 @@ xvfb-run -a python checks/blenderMcpUi.py --blender blender    # Blender's UI (L
 | `transfer.py` | Sends files to a Blender on another machine |
 | `assets.py`, `net.py` | Asset library clients and the HTTP helpers |
 | `generation.py` | Tripo and Rodin providers and the background job runner |
-| `addon/` | The Blender add-on; `gifwriter.py` writes GIFs without an imaging library |
 | `guides/` | The built-in guides |
 | `config.py`, `safety.py` | Settings and safe-mode checks |
 | `cli.py`, `clients.py`, `addonTools.py` | `blender-mcp-bridge` subcommands |
-| `addon/` | The Blender add-on and its extension manifest |
+| `addon/` | The Blender add-on, its extension manifest, and `gifwriter.py` (GIFs without an imaging library) |
 | `runHeadless.py` | Background-mode runner |
 
 The server and the add-on speak one JSON object per line over TCP:
@@ -446,3 +445,25 @@ The server and the add-on speak one JSON object per line over TCP:
 
 To add a tool: add a `cmd_*` function to `addon/__init__.py` and register it in `COMMANDS`,
 add an `@compat.tool` function in `server.py`, and cover both in the tests.
+
+### Releasing
+
+1. Set the new version in `pyproject.toml`, `blenderMcp/__init__.py`, and the add-on
+   (`BRIDGE_VERSION`, `bl_info`, `blender_manifest.toml`); `checks/releaseCheck.py` and the
+   tests fail if any of them disagree. Note the changes in `CHANGELOG.md`.
+2. Push a tag: `git tag v0.4.0 && git push origin v0.4.0`. The `release` workflow builds the
+   wheel, the sdist, and both add-on zips, installs the wheel in a fresh environment,
+   and publishes a GitHub release with the files and install instructions.
+3. Optional, once: publish to PyPI as well. The name `blender-mcp-bridge` already belongs
+   to an unrelated project on PyPI, so first change `name` in `pyproject.toml` to a free
+   one (the command stays `blender-mcp-bridge`). Then add a pending trusted publisher on
+   [pypi.org](https://pypi.org/manage/account/publishing/) (this repository, workflow
+   `release.yml`, environment `pypi`), create the `pypi` environment under the repository's
+   **Settings → Environments**, and set the repository variable `PUBLISH_TO_PYPI` to `true`
+   (**Settings → Secrets and variables → Actions → Variables**). Later tags publish
+   automatically, and `uvx <name>` works without the git URL.
+4. For [extensions.blender.org](https://extensions.blender.org), upload the release's
+   `blender_mcp_bridge-<version>.zip` by hand.
+
+Every pull request runs the same build and checks in the `package` job, so a tag does not
+fail on packaging.

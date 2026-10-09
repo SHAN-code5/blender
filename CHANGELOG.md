@@ -21,6 +21,13 @@
     has no imaging library, and `frame_step` drafts keep real-time playback.
   - Works with Blender 5.0's slotted actions as well as older versions, and a
     new `animation` guide.
+- Release automation: pushing a `v*` tag builds the wheel, sdist, and both
+  add-on zips, checks that every version string matches the tag, installs the
+  wheel in a fresh environment, and publishes a GitHub release with the files.
+  PyPI publishing through trusted publishing is ready but off until enabled
+  (`PUBLISH_TO_PYPI`); the CI `package` job runs the same checks on every
+  change. Package metadata now uses an SPDX license and lists the docs,
+  changelog, and issue tracker.
 - Blender MCP Bridge 0.3.0 (`blenderMcp/`), replacing the single-file add-on
   from the first version: an MCP server and Blender add-on that work with MCP
   SDK 1.x and 2.x, Python 3.10+, Blender 4.2+ as an extension and older

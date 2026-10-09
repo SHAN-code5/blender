@@ -295,7 +295,8 @@ permissions the extension needs.
 | `blenderMcp/addon/` | The Blender add-on the MCP server talks to (extension manifest included) |
 | `ai3dgenerator/` | The AI 3D Object Generator extension |
 | `tests/` | Test suite (pytest; modules are named by area, test functions start with `check`) |
-| `checks/` | Scripts that drive a real Blender, such as the Blender UI check |
+| `checks/` | Scripts that drive a real Blender, such as the Blender UI check, and the release check |
+| `.github/workflows/` | CI (`test.yml`) and tag-triggered releases (`release.yml`) |
 | `docs/` | Architecture notes for the extension |
 | `pyproject.toml` | Packaging for the `blender-mcp-bridge` command |
 

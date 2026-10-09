@@ -1,0 +1,83 @@
+name: release
+
+# Push a tag such as v0.4.0 (matching the version in pyproject.toml) to build the Python
+# package and the Blender add-on zips, check them, and publish a GitHub release.
+# Publishing to PyPI is opt-in: see "Releasing" in blenderMcp/README.md.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the package and the add-on zips
+        run: |
+          python -m pip install build twine
+          python -m build --outdir dist
+          python -m blenderMcp build-addon --out dist
+      - name: Check versions, files, and a fresh install
+        run: |
+          python -m twine check --strict dist/*.tar.gz dist/*.whl
+          python checks/releaseCheck.py --dist dist --tag "$GITHUB_REF_NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Create the release with the files attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          notes="## Install
+
+          **Blender add-on**
+          - Blender 4.2 and newer: **Edit → Preferences → Get Extensions**, **⌄** menu → **Install from Disk**, choose \`blender_mcp_bridge-${version}.zip\`.
+          - Blender 3.0 to 4.1: **Edit → Preferences → Add-ons → Install**, choose \`blender_mcp_bridge-${version}-legacy.zip\`, then enable it.
+
+          **MCP server**
+          \`\`\`
+          uvx --from git+https://github.com/${GITHUB_REPOSITORY}@${TAG} blender-mcp-bridge config claude-desktop --write
+          \`\`\`
+          or \`pip install\` the attached wheel. Setup for other clients: [blenderMcp/README.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/blenderMcp/README.md)."
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "Blender MCP Bridge ${version}" --notes "$notes" --generate-notes
+
+  pypi:
+    # Off until a maintainer sets the repository variable PUBLISH_TO_PYPI to "true" and
+    # registers this workflow as a trusted publisher on PyPI.
+    needs: build
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Keep only the Python package
+        run: rm dist/*.zip
+      - uses: pypa/gh-action-pypi-publish@release/v1
