@@ -288,9 +288,9 @@ def check_default_config_paths_per_platform(tmp_path):
 def check_build_zips_layout(tmp_path):
     zips = addonTools.build_zips(tmp_path)
     with zipfile.ZipFile(zips["extension"]) as archive:
-        assert sorted(archive.namelist()) == ["__init__.py", "blender_manifest.toml"]
+        assert sorted(archive.namelist()) == ["__init__.py", "blender_manifest.toml", "gifwriter.py"]
     with zipfile.ZipFile(zips["legacy"]) as archive:
-        assert archive.namelist() == ["blender_mcp_bridge/__init__.py"]
+        assert sorted(archive.namelist()) == ["blender_mcp_bridge/__init__.py", "blender_mcp_bridge/gifwriter.py"]
 
 
 def check_addon_targets_per_platform(tmp_path):
@@ -398,7 +398,8 @@ ALL_TOOLS = {
     "modify_object", "delete_objects", "set_material", "add_modifier", "undo", "import_model",
     "export_scene", "save_blend_file", "render_image", "render_views", "viewport_screenshot",
     "execute_blender_code", "search_assets", "import_asset", "generate_3d", "get_generation_status",
-    "get_guide",
+    "get_guide", "set_light", "setup_lighting", "set_camera", "insert_keyframes", "clear_animation",
+    "set_timeline", "create_turntable", "render_animation",
 }
 
 
@@ -496,3 +497,173 @@ def check_render_tools_return_image_blocks():
         assert base64.b64decode(result.content[0].data) == png
     assert "layout" in grid.content[1].text
     assert connection.calls[1] == ("render_views", {"views": ["front", "top"], "engine": "auto", "width": 16}, 300)
+
+
+def check_server_forwards_light_camera_and_animation_tools():
+    pytest.importorskip("mcp")
+    import base64
+
+    connection = RecordingConnection(results={
+        "render_animation": lambda p: {"format": "gif", "filepath": "/tmp/a.gif", "frames": 4,
+                                       "image_base64": base64.b64encode(b"\x89PNG\r\n").decode()},
+    })
+    _, results = _run_tools(_server(connection), [
+        ("set_light", {"kind": "area", "target": "Hero", "temperature_kelvin": 3200}),
+        ("set_light", {"name": "Key", "target": [0, 0, 1]}),
+        ("setup_lighting", {"preset": "studio"}),
+        ("set_camera", {"view": "iso", "fit": ["Hero"], "resolution": [1920, 1080]}),
+        ("insert_keyframes", {"object_name": "Hero", "keyframes": [
+            {"frame": 1, "location": [0, 0, 0]}, {"frame": 24, "rotation_degrees": [0, 0, 360], "data": {"lens": 35}}]}),
+        ("clear_animation", {"object_names": ["Hero"]}),
+        ("set_timeline", {"frame_end": 48, "fps": 30}),
+        ("create_turntable", {"frames": 96}),
+        ("render_animation", {"format": "gif", "width": 64}),
+    ])
+    assert not any(_is_error(r) for r in results), [r.content[0].text for r in results if _is_error(r)]
+    calls = {(name, json.dumps(params, sort_keys=True)): timeout for name, params, timeout in connection.calls}
+    assert ("set_light", json.dumps({"kind": "area", "target": "Hero", "temperature_kelvin": 3200.0},
+                                    sort_keys=True)) in calls
+    assert connection.calls[1][1]["target"] == [0.0, 0.0, 1.0]
+    assert connection.calls[2][1] == {"preset": "studio", "strength": 1.0, "azimuth_degrees": 0.0, "replace": True}
+    assert connection.calls[3][1]["resolution"] == [1920, 1080] and connection.calls[3][1]["make_active"] is True
+    assert connection.calls[4][1]["keyframes"] == [
+        {"frame": 1.0, "location": [0.0, 0.0, 0.0]},
+        {"frame": 24.0, "rotation_degrees": [0.0, 0.0, 360.0], "data": {"lens": 35}}]
+    assert connection.calls[4][1]["interpolation"] == "bezier"
+    assert connection.calls[6][1] == {"frame_end": 48, "fps": 30}
+    assert connection.calls[7][1]["frames"] == 96 and connection.calls[7][1]["mode"] == "camera"
+    assert connection.calls[8] == ("render_animation", {"format": "gif", "frame_step": 1, "width": 64, "engine": "auto",
+                                                        "preview_frames": 6}, 1800)
+    assert [block.type for block in results[8].content] == ["image", "text"]
+    assert "/tmp/a.gif" in results[8].content[1].text
+
+
+def check_render_animation_without_preview_returns_text():
+    pytest.importorskip("mcp")
+    connection = RecordingConnection(results={"render_animation": lambda p: {"format": "mp4", "frames": 2}})
+    _, (result,) = _run_tools(_server(connection), [("render_animation", {"preview_frames": 0})])
+    assert [block.type for block in result.content] == ["text"] and '"mp4"' in result.content[0].text
+
+
+# --------------------------------------------------------------------------
+# GIF writer (pure Python, runs inside Blender)
+# --------------------------------------------------------------------------
+
+def _gifwriter():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("gifwriter", ROOT / "blenderMcp" / "addon" / "gifwriter.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _lzw_decode(data, min_code_size=8):
+    """Reference GIF LZW decoder (follows the spec, independent of the encoder's code)."""
+    clear, end = 1 << min_code_size, (1 << min_code_size) + 1
+    position = 0
+    size = min_code_size + 1
+    table = [bytes([i]) for i in range(clear)] + [b"", b""]
+    out, previous = bytearray(), None
+    bits = int.from_bytes(data, "little")
+    while position + size <= len(data) * 8:
+        code = (bits >> position) & ((1 << size) - 1)
+        position += size
+        if code == clear:
+            size, table, previous = min_code_size + 1, table[:end + 1], None
+            continue
+        if code == end:
+            break
+        if code < len(table):
+            entry = table[code]
+            if previous is not None:
+                table.append(previous + entry[:1])
+        else:
+            entry = previous + previous[:1]
+            table.append(entry)
+        out += entry
+        previous = entry
+        if len(table) == (1 << size) and size < 12:
+            size += 1
+    return bytes(out)
+
+
+def _gif_images(data):
+    """Split a GIF into (width, height, delay, [frame index bytes]) using the block structure."""
+    assert data[:6] == b"GIF89a" and data[-1:] == b"\x3b"
+    width, height = int.from_bytes(data[6:8], "little"), int.from_bytes(data[8:10], "little")
+    position, frames, delay = 13 + 768, [], None
+    while data[position] != 0x3B:
+        if data[position] == 0x21:  # extension: skip its sub-blocks
+            if data[position + 1] == 0xF9:
+                delay = int.from_bytes(data[position + 4:position + 6], "little")
+            position += 2
+            while data[position]:
+                position += data[position] + 1
+            position += 1
+            continue
+        assert data[position] == 0x2C
+        position += 10
+        min_code_size = data[position]
+        position += 1
+        payload = bytearray()
+        while data[position]:
+            payload += data[position + 1:position + 1 + data[position]]
+            position += data[position] + 1
+        position += 1
+        frames.append(_lzw_decode(bytes(payload), min_code_size))
+    return width, height, delay, frames
+
+
+def check_gif_writer_round_trips_through_a_reference_decoder():
+    import io
+    import random
+
+    gif = _gifwriter()
+    rng = random.Random(7)
+    width, height = 173, 97  # odd sizes, and enough noise to fill and reset the code table
+    frames = [bytes(rng.randrange(216) for _ in range(width * height)),
+              bytes((x // 3 + y) % 216 for y in range(height) for x in range(width)),
+              bytes([5]) * (width * height)]
+    buffer = io.BytesIO()
+    writer = gif.GifWriter(buffer, width, height, 100.0 / 12)
+    for frame in frames:
+        writer.add_frame(frame)
+    writer.close()
+    decoded_width, decoded_height, delay, decoded = _gif_images(buffer.getvalue())
+    assert (decoded_width, decoded_height, delay) == (width, height, 8)
+    assert decoded == frames
+    with pytest.raises(ValueError):
+        writer.add_frame(b"\x00")
+
+
+def check_gif_quantize_keeps_grays_neutral_and_reads_bmp():
+    import struct
+
+    gif = _gifwriter()
+    palette = gif.palette()
+    width, height = 6, 3
+    pixels = [(200, 120, 40), (128, 128, 128), (255, 255, 255), (0, 0, 0), (90, 90, 90), (10, 200, 250)]
+
+    def bmp(bits):
+        channels = bits // 8
+        stride = (width * channels + 3) & ~3
+        rows = b"".join(
+            b"".join(bytes((b, g, r) + ((255,) if channels == 4 else ())) for r, g, b in pixels).ljust(stride, b"\0")
+            for _ in range(height))
+        header = struct.pack("<2sIHHI", b"BM", 54 + len(rows), 0, 0, 54)
+        info = struct.pack("<IiiHHIIiiII", 40, width, height, 1, bits, 0, len(rows), 2835, 2835, 0, 0)
+        return header + info + rows
+
+    for bits in (24, 32):
+        read_width, read_height, rows = gif.read_bmp(bmp(bits))
+        assert (read_width, read_height) == (width, height)
+        indices = gif.quantize(rows)
+        colors = [tuple(palette[3 * i:3 * i + 3]) for i in indices]
+        for x in (1, 2, 3, 4):  # grays stay gray whatever the dither threshold
+            assert all(len(set(colors[y * width + x])) == 1 for y in range(height))
+        assert colors[2] == (255, 255, 255) and colors[3] == (0, 0, 0)
+        red, green, blue = colors[0]
+        assert red > green > blue
+    with pytest.raises(ValueError):
+        gif.read_bmp(b"PNG not a bitmap")

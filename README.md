@@ -33,7 +33,7 @@ You need Blender and [uv](https://docs.astral.sh/uv/) (or Python 3.10+ with pip)
 3. Restart the client and ask for a scene. Check the connection any time with
    `... blender-mcp-bridge doctor`.
 
-Everything else (all 22 tools, headless Blender, API keys, security, compatibility,
+Everything else (all 30 tools, headless Blender, API keys, security, compatibility,
 troubleshooting) is in [blenderMcp/README.md](blenderMcp/README.md).
 
 ## AI 3D Object Generator
@@ -295,7 +295,8 @@ permissions the extension needs.
 | `blenderMcp/addon/` | The Blender add-on the MCP server talks to (extension manifest included) |
 | `ai3dgenerator/` | The AI 3D Object Generator extension |
 | `tests/` | Test suite (pytest; modules are named by area, test functions start with `check`) |
-| `checks/` | Scripts that drive a real Blender, such as the Blender UI check |
+| `checks/` | Scripts that drive a real Blender, such as the Blender UI check, and the release check |
+| `.github/workflows/` | CI (`test.yml`) and tag-triggered releases (`release.yml`) |
 | `docs/` | Architecture notes for the extension |
 | `pyproject.toml` | Packaging for the `blender-mcp-bridge` command |
 

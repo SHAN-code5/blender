@@ -4,6 +4,30 @@
 
 ### Added
 
+- Blender MCP Bridge 0.4.0: lights, cameras, and animation (30 tools).
+  - `setup_lighting` places a rig sized to the subject and turned toward the
+    scene camera (three-point, studio, outdoor with a gradient sky, dramatic),
+    with a matching background that leaves HDRI worlds alone; `set_light`
+    creates or changes single lights by power, color or color temperature,
+    softness, and aim, optionally tracking an object.
+  - `set_camera` frames objects from any side for the scene's aspect ratio, or
+    places and aims a camera; lens, depth of field, and render resolution.
+  - `insert_keyframes` (location, rotation with full turns kept, scale,
+    visibility, light and camera values; bezier, linear, or constant),
+    `clear_animation`, `set_timeline`, and `create_turntable` for seamless
+    camera-orbit or spinning-object loops.
+  - `render_animation` writes MP4 (H.264), GIF, or PNG frames and returns a
+    contact sheet of frames; GIFs are encoded in pure Python because Blender
+    has no imaging library, and `frame_step` drafts keep real-time playback.
+  - Works with Blender 5.0's slotted actions as well as older versions, and a
+    new `animation` guide.
+- Release automation: pushing a `v*` tag builds the wheel, sdist, and both
+  add-on zips, checks that every version string matches the tag, installs the
+  wheel in a fresh environment, and publishes a GitHub release with the files.
+  PyPI publishing through trusted publishing is ready but off until enabled
+  (`PUBLISH_TO_PYPI`); the CI `package` job runs the same checks on every
+  change. Package metadata now uses an SPDX license and lists the docs,
+  changelog, and issue tracker.
 - Blender MCP Bridge 0.3.0 (`blenderMcp/`), replacing the single-file add-on
   from the first version: an MCP server and Blender add-on that work with MCP
   SDK 1.x and 2.x, Python 3.10+, Blender 4.2+ as an extension and older
@@ -66,6 +90,9 @@
 
 ### Fixed
 
+- Blender MCP Bridge renders no longer fail on Blender 5.0+ when the scene's
+  output is set to video; the output format is switched and restored with its
+  media type.
 - Export no longer includes unrelated objects the user already had selected; the
   previous selection is restored after the export completes.
 - Asset-library metadata is preserved when an asset file is temporarily

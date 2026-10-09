@@ -18,7 +18,7 @@ Protocol (one JSON object per line):
 bl_info = {
     "name": "Blender MCP Bridge",
     "author": "Blender MCP contributors",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > MCP",
     "description": "Let MCP clients such as Claude inspect and edit your scene",
@@ -48,7 +48,7 @@ import bpy  # must precede bmesh/mathutils when running as the standalone bpy mo
 import bmesh
 from mathutils import Euler, Matrix, Vector
 
-BRIDGE_VERSION = "0.3.0"
+BRIDGE_VERSION = "0.4.0"
 PROTOCOL_VERSION = 1
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9876
@@ -309,6 +309,7 @@ def cmd_get_object_info(params):
     info["constraints"] = [{"name": c.name, "type": c.type} for c in obj.constraints]
     info["children"] = [child.name for child in obj.children]
     info["animated"] = bool(obj.animation_data and obj.animation_data.action)
+    info["animation_range"] = _keyframe_range(obj, obj.data)
     info["custom_properties"] = {
         key: obj[key] for key in obj.keys()
         if not key.startswith("_") and isinstance(obj[key], (int, float, str, bool))
@@ -323,10 +324,9 @@ def cmd_get_object_info(params):
             "uv_layers": [uv.name for uv in mesh.uv_layers],
         }
     elif obj.type == "LIGHT":
-        info["light"] = {"type": obj.data.type, "energy": obj.data.energy, "color": _round(obj.data.color, 3)}
+        info["light"] = _light_summary(obj)["light"]
     elif obj.type == "CAMERA":
-        info["camera"] = {"type": obj.data.type, "lens": obj.data.lens,
-                          "is_scene_camera": bpy.context.scene.camera == obj}
+        info["camera"] = _camera_summary(obj, bpy.context.scene)["camera"]
     return info
 
 
@@ -890,26 +890,50 @@ def _resolve_engine(render, requested):
                        code="unsupported")
 
 
-def _frame_camera(scene, direction):
+def _visible_geometry(scene, exclude=()):
+    return [o for o in scene.objects if o.type in GEOMETRY_TYPES and o.visible_get() and o not in exclude]
+
+
+def _bounding_sphere(objects):
+    """Center and radius around objects (the origin and 1 m when there are none)."""
     # Bounding boxes of objects created since the last depsgraph update are still empty.
     bpy.context.view_layer.update()
-    targets = [o for o in scene.objects
-               if o.type in ("MESH", "CURVE", "SURFACE", "META", "FONT", "VOLUME", "GPENCIL",
-                             "GREASEPENCIL", "POINTCLOUD", "CURVES")
-               and o.visible_get()]
-    bbox = _world_bbox(targets)
-    center = (bbox[0] + bbox[1]) / 2 if bbox else Vector((0, 0, 0))
-    radius = max(((bbox[1] - bbox[0]).length / 2) if bbox else 1.0, 0.1)
+    bbox = _world_bbox(objects)
+    if bbox is None:
+        return Vector((0, 0, 0)), 1.0
+    return (bbox[0] + bbox[1]) / 2, max((bbox[1] - bbox[0]).length / 2, 0.1)
+
+
+def _framing_distance(camera_data, render, radius, margin=1.05):
+    """Distance at which a sphere of radius fills the shorter side of the image."""
+    if camera_data.type == "ORTHO":
+        camera_data.ortho_scale = radius * 2 * margin * max(render.resolution_x, render.resolution_y) \
+            / float(min(render.resolution_x, render.resolution_y))
+        return radius * 3
+    # camera_data.angle spans the longer side of the image.
+    longer = float(max(render.resolution_x, render.resolution_y))
+    shorter = float(min(render.resolution_x, render.resolution_y))
+    half_angle = math.atan(math.tan(camera_data.angle / 2) * shorter / longer)
+    return radius / math.sin(half_angle) * margin
+
+
+def _look_at(obj, point):
+    """Turn obj (camera or light, which look down -Z) toward a world-space point."""
+    bpy.context.view_layer.update()
+    location, _, scale = obj.matrix_world.decompose()
+    direction = Vector(point) - location
+    if direction.length < 1e-9:
+        raise CommandError("%s is at the point it should face; move it or choose another target" % obj.name)
+    obj.matrix_world = Matrix.LocRotScale(location, direction.to_track_quat("-Z", "Y"), scale)
+
+
+def _frame_camera(scene, direction):
+    center, radius = _bounding_sphere(_visible_geometry(scene))
     data = bpy.data.cameras.new("MCP_PreviewCamera")
     data.clip_end = max(1000.0, radius * 20)
     camera = bpy.data.objects.new("MCP_PreviewCamera", data)
     scene.collection.objects.link(camera)
-    # data.angle spans the longer side of the image; fit the sphere into the shorter side.
-    render = scene.render
-    longer = float(max(render.resolution_x, render.resolution_y))
-    shorter = float(min(render.resolution_x, render.resolution_y))
-    half_angle = math.atan(math.tan(data.angle / 2) * shorter / longer)
-    distance = radius / math.sin(half_angle) * 1.05
+    distance = _framing_distance(data, scene.render, radius)
     camera.location = center + Vector(direction).normalized() * distance
     camera.rotation_euler = (center - camera.location).to_track_quat("-Z", "Y").to_euler()
     return camera
@@ -930,17 +954,31 @@ def _remove_temporary(objects):
                 bpy.data.lights.remove(obj_data)
 
 
+def _set_output_format(image_settings, file_format):
+    # Blender 5.0+ only offers FFMPEG for VIDEO media and image formats for IMAGE media.
+    if hasattr(image_settings, "media_type"):
+        image_settings.media_type = "VIDEO" if file_format == "FFMPEG" else "IMAGE"
+    image_settings.file_format = file_format
+
+
 @contextlib.contextmanager
 def _render_settings(scene, engine, width, height, samples):
     """Switch render settings for a preview and restore every one of them afterwards.
 
     Yields a list that collects temporary objects (cameras, a sun) to delete at the end.
+    Frame range, frame rate, and video settings are restored too, for animations.
     """
     render = scene.render
+    settings = render.image_settings
     saved = {
         "engine": render.engine, "x": render.resolution_x, "y": render.resolution_y,
         "percentage": render.resolution_percentage, "filepath": render.filepath,
-        "camera": scene.camera, "format": render.image_settings.file_format,
+        "camera": scene.camera, "format": settings.file_format, "color_mode": settings.color_mode,
+        "media": getattr(settings, "media_type", None),
+        "frames": (scene.frame_start, scene.frame_end, scene.frame_step, scene.frame_current),
+        "fps": (render.fps, render.fps_base),
+        "ffmpeg": {key: getattr(render.ffmpeg, key) for key in
+                   ("format", "codec", "constant_rate_factor", "ffmpeg_preset", "audio_codec")},
     }
     if hasattr(scene, "cycles"):
         saved["samples"] = scene.cycles.samples
@@ -955,7 +993,7 @@ def _render_settings(scene, engine, width, height, samples):
             temporary.append(sun)
         render.engine = engine
         render.resolution_x, render.resolution_y, render.resolution_percentage = width, height, 100
-        render.image_settings.file_format = "PNG"
+        _set_output_format(settings, "PNG")
         if engine == "CYCLES" and hasattr(scene, "cycles"):
             scene.cycles.samples = samples
         yield temporary
@@ -964,7 +1002,17 @@ def _render_settings(scene, engine, width, height, samples):
         render.resolution_x, render.resolution_y = saved["x"], saved["y"]
         render.resolution_percentage = saved["percentage"]
         render.filepath = saved["filepath"]
-        render.image_settings.file_format = saved["format"]
+        if saved["media"] is not None:
+            settings.media_type = saved["media"]
+        settings.file_format = saved["format"]
+        settings.color_mode = saved["color_mode"]
+        for key, value in saved["ffmpeg"].items():
+            setattr(render.ffmpeg, key, value)
+        scene.frame_start, scene.frame_end, scene.frame_step = saved["frames"][:3]
+        render.fps, render.fps_base = saved["fps"]
+        if scene.frame_current != saved["frames"][3]:
+            # Only when it moved: frame_set re-applies animation over unkeyed edits.
+            scene.frame_set(saved["frames"][3])
         scene.camera = saved["camera"]
         if "samples" in saved:
             scene.cycles.samples = saved["samples"]
@@ -1058,6 +1106,8 @@ def _compose_grid(paths, width, height, out_path, gap=4):
     for index, path in enumerate(paths):
         image = bpy.data.images.load(path)
         try:
+            if tuple(image.size) != (width, height):
+                image.scale(width, height)
             tile_width, tile_height = image.size
             pixels = array("f", bytes(4 * tile_width * tile_height * 4))
             image.pixels.foreach_get(pixels)
@@ -1193,6 +1243,828 @@ def cmd_viewport_screenshot(params):
         shutil.rmtree(folder, ignore_errors=True)
     return {"format": "png", "width": width, "height": height, "method": method,
             "image_base64": base64.b64encode(data).decode("ascii")}
+
+
+# ---- lights and cameras ---------------------------------------------------
+
+LIGHT_TYPES = {"point": "POINT", "sun": "SUN", "spot": "SPOT", "area": "AREA"}
+TRACK_CONSTRAINT = "MCP Track"
+RIG_PROPERTY = "mcp_rig"
+
+
+def _kelvin_to_rgb(kelvin):
+    """Linear RGB of a blackbody at kelvin (Tanner Helland's fit), brightest channel 1."""
+    t = max(1000.0, min(40000.0, kelvin)) / 100.0
+    if t <= 66:
+        red, green = 255.0, 99.4708025861 * math.log(t) - 161.1195681661
+    else:
+        red = 329.698727446 * (t - 60) ** -0.1332047592
+        green = 288.1221695283 * (t - 60) ** -0.0755148492
+    if t >= 66:
+        blue = 255.0
+    elif t <= 19:
+        blue = 0.0
+    else:
+        blue = 138.5177312231 * math.log(t - 10) - 305.0447927307
+    srgb = [min(255.0, max(0.0, c)) / 255.0 for c in (red, green, blue)]
+    return [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in srgb]
+
+
+def _light_color(params):
+    color = _parse_color(params.get("color"), "color")
+    kelvin = _number(params.get("temperature_kelvin"), "temperature_kelvin", 1000, 40000)
+    if color and kelvin:
+        raise CommandError("pass color or temperature_kelvin, not both")
+    if kelvin:
+        return _kelvin_to_rgb(kelvin)
+    return color[:3] if color else None
+
+
+def _target_point(value, name="target"):
+    """An object name (its bounding-box center) or an [x, y, z] point -> (Vector, object or None)."""
+    if value is None or value == "":
+        return None, None
+    if isinstance(value, str):
+        obj = bpy.data.objects.get(value)
+        if obj is None:
+            raise CommandError("%s object not found: %s" % (name, value), code="not_found")
+        if obj.type in GEOMETRY_TYPES:
+            return _bounding_sphere([obj])[0], obj
+        bpy.context.view_layer.update()
+        return obj.matrix_world.translation.copy(), obj
+    return Vector(_vector(value, 3, name)), None
+
+
+def _set_track(obj, target):
+    """Keep obj aimed at target with a Track To constraint (None removes it)."""
+    for constraint in [c for c in obj.constraints if c.name == TRACK_CONSTRAINT]:
+        obj.constraints.remove(constraint)
+    if target is None:
+        return
+    constraint = obj.constraints.new("TRACK_TO")
+    constraint.name = TRACK_CONSTRAINT
+    constraint.target = target
+    constraint.track_axis = "TRACK_NEGATIVE_Z"
+    constraint.up_axis = "UP_Y"
+
+
+def _tracking(obj):
+    constraint = obj.constraints.get(TRACK_CONSTRAINT)
+    return constraint.target.name if constraint is not None and constraint.target else None
+
+
+def _light_summary(obj):
+    light = obj.data
+    info = {"type": light.type.lower(), "energy": round(light.energy, 4), "color": _round(light.color, 4),
+            "tracking": _tracking(obj)}
+    if light.type == "AREA":
+        info["size"] = round(light.size, 4)
+    elif light.type == "SUN":
+        info["angle_degrees"] = round(math.degrees(light.angle), 3)
+    else:
+        info["radius"] = round(light.shadow_soft_size, 4)
+    if light.type == "SPOT":
+        info["spot_angle_degrees"] = round(math.degrees(light.spot_size), 3)
+        info["spot_blend"] = round(light.spot_blend, 4)
+    return dict(_summary(obj), light=info)
+
+
+def _place(obj, params, allow_view=False):
+    """Apply location / rotation_degrees / target / track from params to a light or camera."""
+    location = _vector(params.get("location"), 3, "location")
+    rotation = _vector(params.get("rotation_degrees"), 3, "rotation_degrees")
+    point, target_obj = _target_point(params.get("target"))
+    if rotation and point is not None:
+        raise CommandError("pass rotation_degrees or target, not both")
+    if location:
+        obj.location = location
+    if rotation:
+        _set_rotation_degrees(obj, rotation)
+    if point is not None:
+        _look_at(obj, point)
+    track = params.get("track")
+    if track:
+        if target_obj is None:
+            raise CommandError("track needs target to be an object name")
+        _set_track(obj, target_obj)
+    elif track is False:
+        _set_track(obj, None)
+
+
+def cmd_set_light(params):
+    name = _string(params.get("name"), "name")
+    kind = _string(params.get("kind"), "kind")
+    if kind is not None:
+        kind = kind.lower()
+        if kind not in LIGHT_TYPES:
+            raise CommandError("kind must be one of: %s" % ", ".join(LIGHT_TYPES))
+    obj = bpy.data.objects.get(name) if name else None
+    if obj is not None and obj.type != "LIGHT":
+        raise CommandError("%s is a %s object, not a light" % (name, obj.type))
+    energy = _number(params.get("energy"), "energy", 0, 1e7)
+    size = _number(params.get("size"), "size", 0, 100000)
+    spot_angle = _number(params.get("spot_angle_degrees"), "spot_angle_degrees", 1, 180)
+    spot_blend = _number(params.get("spot_blend"), "spot_blend", 0, 1)
+    color = _light_color(params)
+    created = obj is None
+    if created:
+        light_type = LIGHT_TYPES[kind or "point"]
+        data = bpy.data.lights.new(name or light_type.title() + "Light", type=light_type)
+        data.energy = DEFAULT_LIGHT_ENERGY[light_type]
+        obj = bpy.data.objects.new(data.name, data)
+        _target_collection(_string(params.get("collection"), "collection")).objects.link(obj)
+    elif kind and obj.data.type != LIGHT_TYPES[kind]:
+        obj.data.type = LIGHT_TYPES[kind]
+    light = obj.data
+    if (spot_angle is not None or spot_blend is not None) and light.type != "SPOT":
+        raise CommandError("spot_angle_degrees and spot_blend only apply to spot lights")
+    if energy is not None:
+        light.energy = energy
+    if color:
+        light.color = color
+    if size is not None:
+        if light.type == "AREA":
+            light.size = size
+        elif light.type == "SUN":
+            light.angle = math.radians(min(size, 180.0))
+        else:
+            light.shadow_soft_size = size
+    if spot_angle is not None:
+        light.spot_size = math.radians(spot_angle)
+    if spot_blend is not None:
+        light.spot_blend = spot_blend
+    _place(obj, params)
+    bpy.context.view_layer.update()
+    _undo_push("light %s" % obj.name)
+    return dict(_light_summary(obj), created=created)
+
+
+LIGHTING_PRESETS = ("three_point", "studio", "outdoor", "dramatic")
+# (role, light type, azimuth from the camera direction, elevation, distance and size in
+#  subject radii, power relative to the key, temperature in kelvin)
+RIG_LIGHTS = {
+    "three_point": [("Key", "AREA", 45, 35, 4.0, 1.5, 1.0, 5200),
+                    ("Fill", "AREA", -60, 15, 5.0, 2.5, 0.35, 6000),
+                    ("Rim", "AREA", 160, 45, 4.0, 1.0, 0.8, 6500)],
+    "studio": [("Key", "AREA", 40, 40, 4.0, 3.0, 1.0, 5600),
+               ("Fill", "AREA", -50, 20, 4.5, 4.0, 0.5, 5600),
+               ("Rim", "AREA", 180, 50, 4.0, 2.0, 0.7, 5600),
+               ("Top", "AREA", 0, 89, 5.0, 3.0, 0.4, 5600)],
+    "dramatic": [("Key", "SPOT", 80, 30, 4.0, 0.2, 1.2, 3400),
+                 ("Rim", "AREA", -150, 35, 4.0, 1.0, 0.6, 9000)],
+}
+KEY_IRRADIANCE = 25.0  # area/spot key power in W is this times distance squared
+SKY_STRENGTH = 0.6
+WORLD_LOOKS = {  # background color (linear), strength
+    "three_point": ((0.05, 0.05, 0.055), 1.0),
+    "studio": ((0.6, 0.6, 0.62), 0.6),
+    "dramatic": ((0.004, 0.004, 0.006), 1.0),
+}
+
+
+def _camera_azimuth(scene, center):
+    """Direction from the subject to the scene camera on the ground plane (front view if none)."""
+    if scene.camera is not None:
+        offset = scene.camera.matrix_world.translation - center
+        if offset.x ** 2 + offset.y ** 2 > 1e-8:
+            return math.atan2(offset.y, offset.x)
+    return math.atan2(-1.0, 0.0)  # cameras look along +Y in the front view
+
+
+def _world_has_environment(world):
+    if world is None or world.node_tree is None:
+        return False
+    return any(n.type in ("TEX_ENVIRONMENT", "TEX_SKY") for n in world.node_tree.nodes)
+
+
+def _new_world(name, color=None, strength=1.0):
+    world = bpy.data.worlds.new(name)
+    tree = _node_tree(world)
+    background = next((n for n in tree.nodes if n.type == "BACKGROUND"), None)
+    if background is None:
+        background = tree.nodes.new("ShaderNodeBackground")
+        output = next((n for n in tree.nodes if n.type == "OUTPUT_WORLD"), None) \
+            or tree.nodes.new("ShaderNodeOutputWorld")
+        tree.links.new(background.outputs["Background"], output.inputs["Surface"])
+    if color is not None:
+        background.inputs["Color"].default_value = list(color) + [1.0]
+        world.color = color
+    background.inputs["Strength"].default_value = strength
+    world[RIG_PROPERTY] = True
+    return world, tree, background
+
+
+SKY_STOPS = ((0.0, (0.16, 0.14, 0.12)), (0.495, (0.30, 0.27, 0.24)),  # ground, below the horizon
+             (0.5, (0.75, 0.85, 1.0)), (0.62, (0.38, 0.58, 0.92)), (1.0, (0.12, 0.30, 0.75)))
+
+
+def _sky_world(name, strength):
+    """A gradient sky with a ground below the horizon, built from nodes every Blender has.
+
+    Blender's physical sky textures change between versions and render the ground black.
+    """
+    world, tree, background = _new_world(name, strength=strength)
+    coords = tree.nodes.new("ShaderNodeTexCoord")
+    separate = tree.nodes.new("ShaderNodeSeparateXYZ")
+    remap = tree.nodes.new("ShaderNodeMath")
+    ramp = tree.nodes.new("ShaderNodeValToRGB")
+    for x, node in enumerate((coords, separate, remap, ramp)):
+        node.location = (x * 220 - 1000, 0)
+    remap.operation = "MULTIPLY_ADD"  # z in [-1, 1] -> [0, 1]
+    remap.inputs[1].default_value = remap.inputs[2].default_value = 0.5
+    elements = ramp.color_ramp.elements
+    while len(elements) < len(SKY_STOPS):
+        elements.new(0.5)
+    for element, (position, color) in zip(elements, SKY_STOPS):
+        element.position, element.color = position, list(color) + [1.0]
+    tree.links.new(coords.outputs["Generated"], separate.inputs[0])
+    tree.links.new(separate.outputs["Z"], remap.inputs[0])
+    tree.links.new(remap.outputs[0], ramp.inputs["Fac"])
+    tree.links.new(ramp.outputs["Color"], background.inputs["Color"])
+    world.color = (0.38, 0.58, 0.92)
+    return world
+
+
+def _remove_rig():
+    removed = []
+    for obj in [o for o in bpy.data.objects if o.get(RIG_PROPERTY) == "lighting"]:
+        removed.append(obj.name)
+        _remove_temporary([obj])
+    return removed
+
+
+def cmd_setup_lighting(params):
+    scene = bpy.context.scene
+    preset = (_string(params.get("preset"), "preset") or "three_point").lower()
+    if preset not in LIGHTING_PRESETS:
+        raise CommandError("preset must be one of: %s" % ", ".join(LIGHTING_PRESETS))
+    strength = _number(params.get("strength"), "strength", 0.01, 100, 1.0)
+    turn = math.radians(_number(params.get("azimuth_degrees"), "azimuth_degrees", -360, 360, 0.0))
+    names = params.get("target")
+    if names is not None and (not isinstance(names, list) or not all(isinstance(n, str) for n in names)):
+        raise CommandError("target must be a list of object names")
+    world_mode = params.get("world")
+    removed = _remove_rig() if params.get("replace", True) else []
+    subjects = [_get_object(n) for n in names] if names else _visible_geometry(scene)
+    center, radius = _bounding_sphere(subjects)
+    base = _camera_azimuth(scene, center) + turn
+    collection = _target_collection(_string(params.get("collection"), "collection") or "MCP Lighting")
+    created = []
+
+    def add(role, light_type, azimuth, elevation, distance, size, power, kelvin):
+        data = bpy.data.lights.new("MCP_%s_%s" % (preset, role), type=light_type)
+        obj = bpy.data.objects.new(data.name, data)
+        collection.objects.link(obj)
+        obj[RIG_PROPERTY] = "lighting"
+        angle, height = base + math.radians(azimuth), math.radians(elevation)
+        reach = distance * radius
+        obj.location = center + Vector((math.cos(angle) * math.cos(height), math.sin(angle) * math.cos(height),
+                                        math.sin(height))) * reach
+        _look_at(obj, center)
+        data.color = _kelvin_to_rgb(kelvin)
+        if light_type == "SUN":
+            data.energy = power * strength
+            data.angle = math.radians(size)
+        else:
+            data.energy = KEY_IRRADIANCE * reach ** 2 * power * strength
+            if light_type == "AREA":
+                data.shape = "DISK"
+                data.size = size * radius
+            else:
+                data.spot_size, data.spot_blend = math.radians(50), 0.4
+                data.shadow_soft_size = size * radius
+        created.append(obj)
+
+    if preset == "outdoor":
+        add("Sun", "SUN", 60, 50, 6.0, 1.5, 4.0, 5500)
+        replace_world = world_mode if world_mode is not None else True
+        if replace_world:
+            world = _sky_world("MCP outdoor World", SKY_STRENGTH * strength)
+    else:
+        for spec in RIG_LIGHTS[preset]:
+            add(*spec)
+        replace_world = world_mode if world_mode is not None else not _world_has_environment(scene.world)
+        if replace_world:
+            color, world_strength = WORLD_LOOKS[preset]
+            world = _new_world("MCP %s World" % preset, color, world_strength)[0]
+    previous_world = scene.world
+    if replace_world:
+        if previous_world is not None and not previous_world.get(RIG_PROPERTY):
+            previous_world.use_fake_user = True  # keep the user's world in the file
+        scene.world = world
+    bpy.context.view_layer.update()
+    rig = set(created)
+    other_lights = [o.name for o in scene.objects if o.type == "LIGHT" and o not in rig and o.visible_get()]
+    _undo_push("lighting %s" % preset)
+    return {"preset": preset, "lights": [_light_summary(o) for o in created], "removed": removed,
+            "subject": {"center": _round(center, 3), "radius": round(radius, 3)},
+            "world": scene.world.name if scene.world else None, "world_replaced": bool(replace_world),
+            "previous_world": previous_world.name if previous_world else None,
+            "other_lights": other_lights}
+
+
+def _camera_summary(obj, scene):
+    camera = obj.data
+    dof = camera.dof
+    info = {"type": camera.type.lower(), "lens": round(camera.lens, 3),
+            "fov_degrees": round(math.degrees(camera.angle), 3),
+            "is_scene_camera": scene.camera == obj, "tracking": _tracking(obj),
+            "resolution": [scene.render.resolution_x, scene.render.resolution_y],
+            "depth_of_field": {"enabled": dof.use_dof,
+                               "focus_object": dof.focus_object.name if dof.focus_object else None,
+                               "focus_distance": round(dof.focus_distance, 4),
+                               "fstop": round(dof.aperture_fstop, 3)}}
+    if camera.type == "ORTHO":
+        info["ortho_scale"] = round(camera.ortho_scale, 4)
+    return dict(_summary(obj), camera=info)
+
+
+def cmd_set_camera(params):
+    scene = bpy.context.scene
+    name = _string(params.get("name"), "name")
+    obj = bpy.data.objects.get(name) if name else scene.camera
+    if obj is not None and obj.type != "CAMERA":
+        raise CommandError("%s is a %s object, not a camera" % (obj.name, obj.type))
+    lens = _number(params.get("lens"), "lens", 1, 5000)
+    resolution = _vector(params.get("resolution"), 2, "resolution")
+    view = _string(params.get("view"), "view")
+    if view is not None:
+        view = view.lower()
+        if view not in VIEW_DIRECTIONS:
+            raise CommandError("view must be one of: %s" % ", ".join(VIEW_DIRECTIONS))
+        if params.get("location") is not None:
+            raise CommandError("pass view (auto-placement) or location, not both")
+    margin = _number(params.get("margin"), "margin", 1.0, 10.0, 1.1)
+    fit = params.get("fit")
+    if fit is not None and (not isinstance(fit, list) or not all(isinstance(n, str) for n in fit)):
+        raise CommandError("fit must be a list of object names")
+    focus = params.get("focus")
+    fstop = _number(params.get("fstop"), "fstop", 0.1, 128)
+    created = obj is None
+    if created:
+        data = bpy.data.cameras.new(name or "Camera")
+        obj = bpy.data.objects.new(data.name, data)
+        _target_collection(_string(params.get("collection"), "collection")).objects.link(obj)
+    camera = obj.data
+    if lens is not None:
+        camera.lens = lens
+    if resolution:
+        width, height = (int(round(v)) for v in resolution)
+        if not (16 <= width <= 16384 and 16 <= height <= 16384):
+            raise CommandError("resolution must be between 16 and 16384 pixels on each side")
+        scene.render.resolution_x, scene.render.resolution_y = width, height
+    if view is not None:
+        subjects = [_get_object(n) for n in fit] if fit else _visible_geometry(scene, exclude={obj})
+        center, radius = _bounding_sphere(subjects)
+        point = _target_point(params.get("target"))[0]
+        aim = point if point is not None else center
+        camera.clip_end = max(camera.clip_end, radius * 20)
+        distance = _framing_distance(camera, scene.render, radius, margin)
+        bpy.context.view_layer.update()
+        placed = obj.matrix_world.copy()  # world space, so a parented camera works too
+        placed.translation = aim + Vector(VIEW_DIRECTIONS[view]).normalized() * distance
+        obj.matrix_world = placed
+        _look_at(obj, aim)
+        if params.get("track"):
+            target_obj = _target_point(params.get("target"))[1]
+            if target_obj is None:
+                raise CommandError("track needs target to be an object name")
+            _set_track(obj, target_obj)
+    else:
+        _place(obj, params)
+    if focus is not None:
+        dof = camera.dof
+        dof.use_dof = True
+        if isinstance(focus, str):
+            dof.focus_object = _get_object(focus)
+        else:
+            dof.focus_object = None
+            dof.focus_distance = _number(focus, "focus", 0.001, 1e6)
+    elif params.get("depth_of_field") is False:
+        camera.dof.use_dof = False
+    if fstop is not None:
+        camera.dof.aperture_fstop = fstop
+    if params.get("make_active", True):
+        scene.camera = obj
+    bpy.context.view_layer.update()
+    _undo_push("camera %s" % obj.name)
+    return dict(_camera_summary(obj, scene), created=created)
+
+
+# ---- animation ------------------------------------------------------------
+
+INTERPOLATIONS = ("BEZIER", "LINEAR", "CONSTANT")
+MAX_FRAME = 1048574
+
+
+def _fcurves(id_data):
+    """F-curves of a datablock's action (Blender 5.0 removed Action.fcurves for slotted actions)."""
+    anim = getattr(id_data, "animation_data", None)
+    if anim is None or anim.action is None:
+        return []
+    slot = getattr(anim, "action_slot", None)
+    if slot is not None:
+        from bpy_extras import anim_utils
+        getter = getattr(anim_utils, "action_get_channelbag_for_slot", None)
+        if getter is not None:
+            bag = getter(anim.action, slot)
+            return list(bag.fcurves) if bag is not None else []
+    return list(getattr(anim.action, "fcurves", []))
+
+
+def _keyframe_range(*datablocks):
+    frames = [point.co[0] for data in datablocks if data is not None
+              for curve in _fcurves(data) for point in curve.keyframe_points]
+    return [round(min(frames), 3), round(max(frames), 3)] if frames else None
+
+
+def _rotation_path(obj):
+    return {"QUATERNION": "rotation_quaternion", "AXIS_ANGLE": "rotation_axis_angle"}.get(
+        obj.rotation_mode, "rotation_euler")
+
+
+def _set_keyed_rotation(obj, degrees):
+    """Like _set_rotation_degrees, but keeps full turns (0 -> 360 must not collapse to 0)."""
+    if obj.rotation_mode == "XYZ":
+        obj.rotation_euler = [math.radians(d) for d in degrees]
+        return
+    euler = Euler([math.radians(d) for d in degrees], "XYZ")
+    if obj.rotation_mode in ("QUATERNION", "AXIS_ANGLE"):
+        quaternion = euler.to_quaternion()
+        if obj.rotation_mode == "QUATERNION":
+            quaternion.make_compatible(obj.rotation_quaternion)
+            obj.rotation_quaternion = quaternion
+        else:
+            axis, angle = quaternion.to_axis_angle()
+            obj.rotation_axis_angle = [angle, axis.x, axis.y, axis.z]
+    else:
+        obj.rotation_euler = euler.to_matrix().to_euler(obj.rotation_mode, obj.rotation_euler)
+
+
+def _data_property(data, key, value, index):
+    prop = data.bl_rna.properties.get(key) if data is not None else None
+    if prop is None or key == "rna_type" or not prop.is_animatable or prop.is_readonly:
+        raise CommandError("keyframes[%d].data: %s has no animatable property %r" % (
+            index, getattr(data, "name", "this object"), key))
+    if prop.type not in ("FLOAT", "INT", "BOOLEAN"):
+        raise CommandError("keyframes[%d].data: %r is not a number or switch" % (index, key))
+    try:
+        if getattr(prop, "array_length", 0):
+            if key == "color" and isinstance(value, str):
+                value = _parse_color(value, key)[:prop.array_length]
+            setattr(data, key, value)
+        else:
+            setattr(data, key, value)
+    except (TypeError, ValueError) as exc:
+        raise CommandError("keyframes[%d].data: cannot set %s to %r: %s" % (index, key, value, exc))
+
+
+def cmd_insert_keyframes(params):
+    obj = _get_object(params.get("object_name"))
+    keyframes = params.get("keyframes")
+    if not isinstance(keyframes, list) or not 1 <= len(keyframes) <= 1000:
+        raise CommandError("keyframes must be a list of 1-1000 objects like {frame, location, ...}")
+    interpolation = (_string(params.get("interpolation"), "interpolation") or "BEZIER").upper()
+    if interpolation not in INTERPOLATIONS:
+        raise CommandError("interpolation must be one of: %s" % ", ".join(INTERPOLATIONS))
+    scene = bpy.context.scene
+    touched, frames = set(), set()
+    for index, key in enumerate(keyframes):
+        if not isinstance(key, dict):
+            raise CommandError("keyframes[%d] must be an object" % index)
+        frame = _number(key.get("frame"), "keyframes[%d].frame" % index, -MAX_FRAME, MAX_FRAME)
+        if frame is None:
+            raise CommandError("keyframes[%d].frame is required" % index)
+        location = _vector(key.get("location"), 3, "keyframes[%d].location" % index)
+        rotation = _vector(key.get("rotation_degrees"), 3, "keyframes[%d].rotation_degrees" % index)
+        scale = _vector(key.get("scale"), 3, "keyframes[%d].scale" % index)
+        visible = key.get("visible")
+        data_values = key.get("data") or {}
+        if not isinstance(data_values, dict):
+            raise CommandError("keyframes[%d].data must be an object of property names to values" % index)
+        if not (location or rotation or scale or visible is not None or data_values):
+            raise CommandError("keyframes[%d] sets nothing; give location, rotation_degrees, scale, "
+                               "visible, or data" % index)
+        frames.add(frame)
+        if location:
+            obj.location = location
+            obj.keyframe_insert("location", frame=frame)
+            touched.add((obj, "location"))
+        if rotation:
+            _set_keyed_rotation(obj, rotation)
+            obj.keyframe_insert(_rotation_path(obj), frame=frame)
+            touched.add((obj, _rotation_path(obj)))
+        if scale:
+            obj.scale = scale
+            obj.keyframe_insert("scale", frame=frame)
+            touched.add((obj, "scale"))
+        if visible is not None:
+            obj.hide_viewport = obj.hide_render = not bool(visible)
+            for path in ("hide_viewport", "hide_render"):
+                obj.keyframe_insert(path, frame=frame)
+                touched.add((obj, path))
+        for prop_name, value in data_values.items():
+            _data_property(obj.data, prop_name, value, index)
+            obj.data.keyframe_insert(prop_name, frame=frame)
+            touched.add((obj.data, prop_name))
+    for owner in {owner for owner, _ in touched}:
+        paths = {path for o, path in touched if o == owner}
+        for curve in _fcurves(owner):
+            if curve.data_path not in paths:
+                continue
+            for point in curve.keyframe_points:
+                if any(abs(point.co[0] - f) < 1e-4 for f in frames):
+                    point.interpolation = interpolation
+            curve.update()
+    if params.get("extend_timeline", True):
+        scene.frame_start = min(scene.frame_start, int(math.floor(min(frames))))
+        scene.frame_end = max(scene.frame_end, int(math.ceil(max(frames))))
+    # Re-evaluate so the object shows the animated values at the current frame.
+    scene.frame_set(scene.frame_current)
+    _undo_push("keyframes %s" % obj.name)
+    return {"object": obj.name, "keyframes": len(keyframes), "frames": sorted(round(f, 3) for f in frames),
+            "channels": sorted({path for _, path in touched}), "interpolation": interpolation,
+            "animation_range": _keyframe_range(obj, obj.data),
+            "timeline": [scene.frame_start, scene.frame_end]}
+
+
+def cmd_clear_animation(params):
+    names = params.get("object_names")
+    if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
+        raise CommandError("object_names must be a non-empty list of object names")
+    cleared = []
+    for obj in [_get_object(n) for n in names]:
+        had = bool(_fcurves(obj) or _fcurves(obj.data))
+        obj.animation_data_clear()
+        if obj.data is not None and hasattr(obj.data, "animation_data_clear"):
+            obj.data.animation_data_clear()
+        if had:
+            cleared.append(obj.name)
+    _undo_push("clear animation")
+    return {"cleared": cleared, "without_animation": [n for n in names if n not in cleared]}
+
+
+def cmd_set_timeline(params):
+    scene = bpy.context.scene
+    start = _number(params.get("frame_start"), "frame_start", 0, MAX_FRAME)
+    end = _number(params.get("frame_end"), "frame_end", 0, MAX_FRAME)
+    fps = _number(params.get("fps"), "fps", 1, 240)
+    current = _number(params.get("frame_current"), "frame_current", -MAX_FRAME, MAX_FRAME)
+    new_start = int(start) if start is not None else scene.frame_start
+    new_end = int(end) if end is not None else scene.frame_end
+    if new_end < new_start:
+        raise CommandError("frame_end (%d) must not be before frame_start (%d)" % (new_end, new_start))
+    scene.frame_start, scene.frame_end = new_start, new_end
+    if fps is not None:
+        scene.render.fps, scene.render.fps_base = int(round(fps)), 1.0
+    if current is not None:
+        scene.frame_set(int(current))
+    _undo_push("timeline")
+    return _timeline(scene)
+
+
+def _timeline(scene):
+    fps = scene.render.fps / scene.render.fps_base
+    frames = scene.frame_end - scene.frame_start + 1
+    return {"frame_start": scene.frame_start, "frame_end": scene.frame_end, "frame_current": scene.frame_current,
+            "fps": round(fps, 3), "frames": frames, "seconds": round(frames / fps, 3)}
+
+
+def _remove_turntable():
+    removed = []
+    for obj in sorted((o for o in bpy.data.objects if o.get(RIG_PROPERTY) == "turntable"),
+                      key=lambda o: o.parent is None):  # children before their pivot
+        removed.append(obj.name)
+        _remove_temporary([obj])
+    return removed
+
+
+def cmd_create_turntable(params):
+    scene = bpy.context.scene
+    mode = (_string(params.get("mode"), "mode") or "camera").lower()
+    if mode not in ("camera", "object"):
+        raise CommandError("mode must be camera (orbit the camera) or object (spin the object)")
+    frames = int(_number(params.get("frames"), "frames", 2, 100000, 120))
+    start = int(_number(params.get("frame_start"), "frame_start", 0, MAX_FRAME, 1))
+    turns = _number(params.get("turns"), "turns", -100, 100, 1.0)
+    if abs(turns) < 1e-6:
+        raise CommandError("turns must not be 0")
+    names = params.get("target")
+    if names is not None and (not isinstance(names, list) or not all(isinstance(n, str) for n in names)):
+        raise CommandError("target must be a list of object names")
+    end = start + frames
+    removed = []
+    if mode == "object":
+        if not names or len(names) != 1:
+            raise CommandError("mode='object' spins exactly one object; pass target=[name]")
+        obj = _get_object(names[0])
+        if obj.rotation_mode not in ("XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"):
+            raise CommandError("%s uses %s rotation; mode='object' needs Euler rotation" % (obj.name, obj.rotation_mode))
+        base = obj.rotation_euler.z
+        for frame, angle in ((start, base), (end, base + 2 * math.pi * turns)):
+            obj.rotation_euler.z = angle
+            obj.keyframe_insert("rotation_euler", index=2, frame=frame)
+        spun, camera = obj, scene.camera
+    else:
+        if params.get("replace", True):
+            removed = _remove_turntable()
+        subjects = [_get_object(n) for n in names] if names else _visible_geometry(scene)
+        center, radius = _bounding_sphere(subjects)
+        elevation = math.radians(_number(params.get("elevation_degrees"), "elevation_degrees", -89, 89, 20.0))
+        pivot = bpy.data.objects.new("MCP_TurntablePivot", None)
+        pivot.empty_display_type = "PLAIN_AXES"
+        pivot.empty_display_size = radius * 0.25
+        pivot.location = center
+        data = bpy.data.cameras.new("MCP_TurntableCamera")
+        data.lens = _number(params.get("lens"), "lens", 1, 5000, 50.0)
+        data.clip_end = max(data.clip_end, radius * 20)
+        camera = bpy.data.objects.new("MCP_TurntableCamera", data)
+        collection = _target_collection(_string(params.get("collection"), "collection"))
+        for obj in (pivot, camera):
+            collection.objects.link(obj)
+            obj[RIG_PROPERTY] = "turntable"
+        camera.parent = pivot
+        distance = _framing_distance(data, scene.render, radius,
+                                     _number(params.get("margin"), "margin", 1.0, 10.0, 1.1))
+        offset = Vector((0.0, -math.cos(elevation), math.sin(elevation))) * distance
+        camera.location = offset  # relative to the pivot, which sits at the center unrotated
+        camera.rotation_euler = (-offset).to_track_quat("-Z", "Y").to_euler()
+        for frame, angle in ((start, 0.0), (end, 2 * math.pi * turns)):
+            pivot.rotation_euler.z = angle
+            pivot.keyframe_insert("rotation_euler", index=2, frame=frame)
+        spun = pivot
+        if params.get("make_active", True):
+            scene.camera = camera
+    for curve in _fcurves(spun):
+        if curve.data_path == "rotation_euler" and curve.array_index == 2:
+            for point in curve.keyframe_points:
+                if abs(point.co[0] - start) < 1e-4 or abs(point.co[0] - end) < 1e-4:
+                    point.interpolation = "LINEAR"  # a steady spin
+            curve.update()
+    # A loop: the last rendered frame is one step before the full turn repeats frame_start.
+    scene.frame_start, scene.frame_end = start, end - 1
+    scene.frame_set(start)
+    _undo_push("turntable")
+    return {"mode": mode, "spinning": spun.name, "camera": camera.name if camera else None,
+            "turns": turns, "removed": removed, **_timeline(scene)}
+
+
+ANIMATION_FORMATS = ("mp4", "gif", "png")
+GIF_MAX_FRAMES = 300
+
+
+def _default_output(extension):
+    folder = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else tempfile.gettempdir()
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    name = "animation_%s%s" % (stamp, "." + extension if extension != "png" else "")
+    return os.path.join(folder, "mcp_renders", name)
+
+
+def _render_animation_frames(scene):
+    try:
+        with _ui_context():
+            bpy.ops.render.render(animation=True)
+    except RuntimeError as exc:
+        cycles = getattr(scene, "cycles", None)
+        if "denois" not in str(exc).lower() or cycles is None or not cycles.use_denoising:
+            raise
+        cycles.use_denoising = False  # restored by _render_settings
+        with _ui_context():
+            bpy.ops.render.render(animation=True)
+
+
+def _write_gif(frame_paths, out_path, fps):
+    from . import gifwriter
+
+    partial = out_path + ".partial"
+    try:
+        with open(partial, "wb") as handle:
+            writer = None
+            for path in frame_paths:
+                with open(path, "rb") as frame:
+                    data = frame.read()
+                if writer is None:
+                    width, height, _ = gifwriter.read_bmp(data)
+                    writer = gifwriter.GifWriter(handle, width, height, 100.0 / fps)
+                writer.add_bmp(data)
+            writer.close()
+        os.replace(partial, out_path)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
+
+
+def cmd_render_animation(params):
+    scene = bpy.context.scene
+    output = (_string(params.get("format"), "format") or "mp4").lower()
+    if output not in ANIMATION_FORMATS:
+        raise CommandError("format must be one of: %s" % ", ".join(ANIMATION_FORMATS))
+    start = int(_number(params.get("frame_start"), "frame_start", 0, MAX_FRAME, scene.frame_start))
+    end = int(_number(params.get("frame_end"), "frame_end", 0, MAX_FRAME, scene.frame_end))
+    step = int(_number(params.get("frame_step"), "frame_step", 1, 1000, 1))
+    if end < start:
+        raise CommandError("frame_end (%d) must not be before frame_start (%d)" % (end, start))
+    frame_numbers = list(range(start, end + 1, step))
+    limit = GIF_MAX_FRAMES if output == "gif" else 10000
+    if len(frame_numbers) > limit:
+        raise CommandError("%d frames is too many for %s (limit %d); raise frame_step or shorten the range"
+                           % (len(frame_numbers), output, limit))
+    fps = int(_number(params.get("fps"), "fps", 1, 240, round(scene.render.fps / scene.render.fps_base)))
+    width = int(_number(params.get("width"), "width", 16, 4096, 320 if output == "gif" else 960))
+    aspect = scene.render.resolution_y / float(scene.render.resolution_x)
+    height = int(_number(params.get("height"), "height", 16, 4096, max(16, round(width * aspect))))
+    if output == "mp4":  # H.264 needs even dimensions
+        width, height = width - width % 2, height - height % 2
+    samples = int(_number(params.get("samples"), "samples", 1, 4096, 16))
+    preview_count = int(_number(params.get("preview_frames"), "preview_frames", 0, 16, 6))
+    camera_name = _string(params.get("camera"), "camera")
+    engine = _resolve_engine(scene.render, params.get("engine"))
+    target = _string(params.get("filepath"), "filepath")
+    path = os.path.abspath(os.path.expanduser(target)) if target else _default_output(output)
+    if output != "png" and not path.lower().endswith("." + output):
+        path += "." + output
+    os.makedirs(path if output == "png" else os.path.dirname(path), exist_ok=True)
+
+    work = tempfile.mkdtemp(prefix="mcp_anim_")
+    started = time.time()
+    try:
+        with _render_settings(scene, engine, width, height, samples) as temporary:
+            if camera_name:
+                camera = _get_object(camera_name)
+                if camera.type != "CAMERA":
+                    raise CommandError("%s is not a camera" % camera_name)
+                scene.camera = camera
+            elif scene.camera is None:
+                temporary.append(_frame_camera(scene, VIEW_DIRECTIONS["iso"]))
+                scene.camera = temporary[-1]
+            scene.frame_start, scene.frame_end, scene.frame_step = start, end, step
+            # Skipped frames play back at fps / step, so the result keeps real-time speed.
+            scene.render.fps, scene.render.fps_base = max(1, int(round(fps / float(step)))), 1.0
+            render, settings = scene.render, scene.render.image_settings
+            if output == "mp4":
+                _set_output_format(settings, "FFMPEG")
+                render.ffmpeg.format, render.ffmpeg.codec = "MPEG4", "H264"
+                render.ffmpeg.constant_rate_factor, render.ffmpeg.ffmpeg_preset = "HIGH", "GOOD"
+                render.ffmpeg.audio_codec = "NONE"
+                render.filepath = os.path.join(work, "animation.mp4")
+            else:
+                _set_output_format(settings, "BMP" if output == "gif" else "PNG")
+                if output == "gif":
+                    settings.color_mode = "RGB"  # 24-bit rows; GIF has no partial transparency
+                folder = work if output == "gif" else path
+                render.filepath = os.path.join(folder, "frame_")
+            _render_animation_frames(scene)
+            if output == "mp4":
+                produced = os.path.join(work, "animation.mp4")
+                if not os.path.exists(produced):
+                    raise CommandError("render finished but wrote no video", code="failed")
+                shutil.move(produced, path)
+                frame_files = []
+            else:
+                extension = ".bmp" if output == "gif" else ".png"
+                frame_files = [os.path.join(work if output == "gif" else path, "frame_%04d%s" % (n, extension))
+                               for n in frame_numbers]
+                missing = [p for p in frame_files if not os.path.exists(p)]
+                if missing:
+                    raise CommandError("render finished without %d of %d frames" % (len(missing), len(frame_files)),
+                                       code="failed")
+                if output == "gif":
+                    _write_gif(frame_files, path, fps / float(step))
+
+            preview = None
+            if preview_count:
+                picks = sorted({frame_numbers[round(i * (len(frame_numbers) - 1) / max(1, preview_count - 1))]
+                                for i in range(min(preview_count, len(frame_numbers)))})
+                tile_width = min(width, 320)
+                tile_height = max(16, round(tile_width * height / float(width)))
+                tiles = []
+                if frame_files:
+                    tiles = [frame_files[frame_numbers.index(n)] for n in picks]
+                else:  # a video: render small stills of the chosen frames
+                    render.resolution_x, render.resolution_y = tile_width, tile_height
+                    _set_output_format(settings, "PNG")
+                    for n in picks:
+                        scene.frame_set(n)
+                        tiles.append(os.path.join(work, "preview_%04d.png" % n))
+                        render.filepath = tiles[-1]
+                        with _ui_context():
+                            bpy.ops.render.render(write_still=True)
+                grid_path = os.path.join(work, "preview.png")
+                columns = _compose_grid(tiles, tile_width, tile_height, grid_path)
+                with open(grid_path, "rb") as handle:
+                    preview = {"frames": picks, "columns": columns,
+                               "image_base64": base64.b64encode(handle.read()).decode("ascii")}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    result = {"format": output, "filepath": path, "frames": len(frame_numbers), "frame_range": [start, end],
+              "frame_step": step, "fps": fps, "seconds": round(len(frame_numbers) * step / float(fps), 3),
+              "size": [width, height], "engine": engine, "render_seconds": round(time.time() - started, 1),
+              "bytes": os.path.getsize(path) if os.path.isfile(path) else None}
+    if preview:
+        result["preview_frames"] = preview["frames"]
+        result["preview_columns"] = preview["columns"]
+        result["image_base64"] = preview["image_base64"]
+    return result
 
 
 def cmd_execute_code(params):
@@ -1485,6 +2357,14 @@ COMMANDS = {
     "receive_file": cmd_receive_file,
     "undo": cmd_undo,
     "redo": cmd_redo,
+    "set_light": cmd_set_light,
+    "setup_lighting": cmd_setup_lighting,
+    "set_camera": cmd_set_camera,
+    "insert_keyframes": cmd_insert_keyframes,
+    "clear_animation": cmd_clear_animation,
+    "set_timeline": cmd_set_timeline,
+    "create_turntable": cmd_create_turntable,
+    "render_animation": cmd_render_animation,
 }
 
 

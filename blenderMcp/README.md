@@ -1,13 +1,17 @@
 # Blender MCP Bridge
 
-Let Claude and other [MCP](https://modelcontextprotocol.io) clients build, inspect, render,
-import, and export scenes in Blender, bring in HDRIs, textures, and models from free asset
-libraries, and generate new models with AI.
+Let Claude and other [MCP](https://modelcontextprotocol.io) clients build, light, animate,
+inspect, render, import, and export scenes in Blender, bring in HDRIs, textures, and models
+from free asset libraries, and generate new models with AI.
 
-- **22 structured tools**: create, modify, and delete objects; materials and modifiers;
+- **30 structured tools**: create, modify, and delete objects; materials and modifiers;
   import and export glTF/GLB, FBX, OBJ, STL, PLY, USD, Alembic, and more; undo and redo;
   save. Each validates its input and picks the right Blender operator for the running
   version. Python is there when you need it.
+- **Lights, cameras, animation**: lighting presets sized to the subject (three-point,
+  studio, outdoor, dramatic), lights by color temperature, cameras that frame objects
+  from any side with depth of field, keyframes, seamless turntables, and renders to MP4,
+  GIF, or PNG frames with a contact sheet the model can check.
 - **Visual feedback**: `render_views` returns several auto-framed angles in one image,
   `render_image` renders through the camera, and `viewport_screenshot` shows exactly what
   the user sees. Previews work on headless servers too (Cycles on the CPU).
@@ -17,8 +21,8 @@ libraries, and generate new models with AI.
   Blender never freezes, and they reach Blender even when it runs on another machine.
 - **AI generation**: `generate_3d` with Tripo, Hyper3D Rodin, or any REST service, from text
   or a reference image. Long jobs return a job id instead of timing out.
-- **Guides**: short built-in guides (workflow, modeling, materials, lighting, Blender Python,
-  assets) the model reads before unfamiliar tasks.
+- **Guides**: short built-in guides (workflow, modeling, materials, lighting, animation,
+  Blender Python, assets) the model reads before unfamiliar tasks.
 - **Runs everywhere**: Blender 4.2+ as an extension and older versions as a legacy add-on,
   with the UI or headless; the server on Windows, macOS, and Linux with Python 3.10+ and MCP
   SDK 1.x or 2.x; any MCP client over stdio, SSE, or streamable HTTP.
@@ -152,6 +156,14 @@ blender-mcp-bridge --transport sse                                # http://127.0
 | | `set_material` | Principled BSDF color (`#RRGGBB` or linear RGB), metallic, roughness, emission, alpha |
 | | `add_modifier` | Any modifier with its settings; object and collection settings take names |
 | | `undo` | Undo or redo steps; every structured change is one step (UI mode) |
+| Light & camera | `setup_lighting` | Preset rig sized to the subject and turned toward the camera: `three_point`, `studio`, `outdoor`, `dramatic`, with a matching background |
+| | `set_light` | Create or change a point, sun, spot, or area light: power, color or temperature (K), softness, aim at an object or point, tracking |
+| | `set_camera` | Frame objects from a side, or place and aim; lens, depth of field, render resolution |
+| Animate | `insert_keyframes` | Key location, rotation (full turns kept), scale, visibility, and light/camera values, with bezier, linear, or constant interpolation |
+| | `create_turntable` | Seamless 360° loop: a camera orbiting the subject, or one object spinning |
+| | `set_timeline` | Frame range, frame rate, current frame |
+| | `clear_animation` | Remove an object's keyframes |
+| | `render_animation` | Render to MP4, GIF, or PNG frames; returns a contact sheet of frames |
 | Files | `import_model` | `.glb .gltf .fbx .obj .stl .ply .usd .usda .usdc .usdz .abc .dae .svg` or a `.blend`, optionally scaled to a size and placed |
 | | `export_scene` | `.glb .gltf .fbx .obj .stl .ply .usd .usda .usdc .usdz .abc`, whole scene, selection, or named objects |
 | | `save_blend_file` | Save, save as, or save a copy |
@@ -259,7 +271,8 @@ Unknown keys are rejected with the list of valid ones.
 | `workflow` | How to approach a task, units and axes, real-world sizes |
 | `modeling` | Primitives, sizes, placement, and the most useful modifiers with their settings |
 | `materials` | Values for common surfaces, color formats, PBR textures |
-| `lighting` | Lighting, cameras, and preview rendering |
+| `lighting` | Lighting presets and single lights, cameras and framing, preview rendering |
+| `animation` | Keyframes, turntables, the timeline, and rendering video or GIFs |
 | `python` | Writing `execute_blender_code` scripts; API differences between Blender 3.x, 4.x, and 5.x |
 | `assets` | Asset libraries and AI generation |
 
@@ -371,11 +384,11 @@ the add-on and the server versions differ.
 | Component | Tested | Expected to work |
 |---|---|---|
 | Blender, background mode | 4.0 (Ubuntu package), 4.5 LTS, 5.0, 5.2 LTS | 4.2+ |
-| Blender, UI mode | 4.0 (Ubuntu package, under Xvfb): panel, auto-start, undo/redo, viewport screenshot, Workbench render, import/export | all versions with a UI |
+| Blender, UI mode | 4.0 (Ubuntu package, under Xvfb): panel, auto-start, undo/redo, viewport screenshot, Workbench render, import/export, lighting preset, camera framing, turntable GIF | all versions with a UI |
 | Add-on install | Extension zip on 4.5 and 5.0; legacy zip on 4.0, 4.5, and 5.0 | Extension on 4.2+; legacy add-on from 3.0 (3.x untested) |
 | MCP Python SDK | 1.10, 1.30, 2.2, 2.3 | `mcp>=1.10,<3` |
 | Python (server) | 3.10, 3.11, 3.13 | 3.10+ |
-| Server OS | Linux | Windows and macOS (covered by the CI matrix) |
+| Server OS | Linux; Windows and macOS in CI | Windows, macOS, Linux |
 | MCP transport | stdio (and in-memory sessions in tests) | SSE and streamable HTTP through the MCP SDK |
 
 The asset libraries and generators are tested against local stand-ins that follow each
@@ -419,7 +432,7 @@ xvfb-run -a python checks/blenderMcpUi.py --blender blender    # Blender's UI (L
 | `guides/` | The built-in guides |
 | `config.py`, `safety.py` | Settings and safe-mode checks |
 | `cli.py`, `clients.py`, `addonTools.py` | `blender-mcp-bridge` subcommands |
-| `addon/` | The Blender add-on and its extension manifest |
+| `addon/` | The Blender add-on, its extension manifest, and `gifwriter.py` (GIFs without an imaging library) |
 | `runHeadless.py` | Background-mode runner |
 
 The server and the add-on speak one JSON object per line over TCP:
@@ -432,3 +445,25 @@ The server and the add-on speak one JSON object per line over TCP:
 
 To add a tool: add a `cmd_*` function to `addon/__init__.py` and register it in `COMMANDS`,
 add an `@compat.tool` function in `server.py`, and cover both in the tests.
+
+### Releasing
+
+1. Set the new version in `pyproject.toml`, `blenderMcp/__init__.py`, and the add-on
+   (`BRIDGE_VERSION`, `bl_info`, `blender_manifest.toml`); `checks/releaseCheck.py` and the
+   tests fail if any of them disagree. Note the changes in `CHANGELOG.md`.
+2. Push a tag: `git tag v0.4.0 && git push origin v0.4.0`. The `release` workflow builds the
+   wheel, the sdist, and both add-on zips, installs the wheel in a fresh environment,
+   and publishes a GitHub release with the files and install instructions.
+3. Optional, once: publish to PyPI as well. The name `blender-mcp-bridge` already belongs
+   to an unrelated project on PyPI, so first change `name` in `pyproject.toml` to a free
+   one (the command stays `blender-mcp-bridge`). Then add a pending trusted publisher on
+   [pypi.org](https://pypi.org/manage/account/publishing/) (this repository, workflow
+   `release.yml`, environment `pypi`), create the `pypi` environment under the repository's
+   **Settings → Environments**, and set the repository variable `PUBLISH_TO_PYPI` to `true`
+   (**Settings → Secrets and variables → Actions → Variables**). Later tags publish
+   automatically, and `uvx <name>` works without the git URL.
+4. For [extensions.blender.org](https://extensions.blender.org), upload the release's
+   `blender_mcp_bridge-<version>.zip` by hand.
+
+Every pull request runs the same build and checks in the `package` job, so a tag does not
+fail on packaging.

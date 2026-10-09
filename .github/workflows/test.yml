@@ -20,6 +20,24 @@ jobs:
       - name: Run headless test suite
         run: pytest -q
 
+  # What the release workflow builds, checked on every change so tagging cannot fail.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the package and the add-on zips
+        run: |
+          python -m pip install build twine
+          python -m build --outdir dist
+          python -m blenderMcp build-addon --out dist
+      - name: Check them as a release would
+        run: |
+          python -m twine check --strict dist/*.tar.gz dist/*.whl
+          python checks/releaseCheck.py --dist dist
+
   # The Blender MCP server on every OS, the oldest and newest supported Python,
   # and both major versions of the MCP SDK.
   blender-mcp:

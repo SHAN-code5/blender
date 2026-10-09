@@ -418,3 +418,283 @@ def check_assets_and_generation_end_to_end(http_api, tmp_path):
     generated = bpy.data.objects["Generated"]
     assert generated["mcp_source"] == "mock" and abs(max(generated.dimensions) - 0.5) < 1e-4
     assert json.loads(text_of(results[3]))["state"] == "completed"
+
+
+# ---- lights, cameras, animation ---------------------------------------------
+
+def _in_view(camera_name, object_names):
+    """True when every bounding-box corner of the objects projects inside the camera's frame."""
+    from bpy_extras.object_utils import world_to_camera_view
+    from mathutils import Vector
+
+    scene = bpy.context.scene
+    bpy.context.view_layer.update()
+    camera = bpy.data.objects[camera_name]
+    for name in object_names:
+        obj = bpy.data.objects[name]
+        for corner in obj.bound_box:
+            x, y, depth = world_to_camera_view(scene, camera, obj.matrix_world @ Vector(corner))
+            if not (0 <= x <= 1 and 0 <= y <= 1 and depth > 0):
+                return False
+    return True
+
+
+def _forward(obj):
+    from mathutils import Vector
+
+    bpy.context.view_layer.update()
+    return (obj.matrix_world.to_quaternion() @ Vector((0, 0, -1))).normalized()
+
+
+def check_set_light_creates_aims_and_updates():
+    run("create_object", kind="cube", name="Subject", location=[0, 0, 1])
+    light = run("set_light", name="Key", kind="area", location=[4, -4, 5], target="Subject", energy=800,
+                temperature_kelvin=3200, size=2)
+    assert light["created"] is True and light["type"] == "LIGHT"
+    assert light["light"]["type"] == "area" and light["light"]["energy"] == 800 and light["light"]["size"] == 2
+    red, green, blue = light["light"]["color"]
+    assert red == 1.0 and red > green > blue  # warm
+    obj = bpy.data.objects["Key"]
+    toward = (bpy.data.objects["Subject"].location - obj.location).normalized()
+    assert _forward(obj).dot(toward) > 0.999
+
+    changed = run("set_light", name="Key", energy=1200, color="#ffffff", track=True, target="Subject")
+    assert changed["created"] is False and changed["light"]["energy"] == 1200
+    assert changed["light"]["color"] == [1.0, 1.0, 1.0] and changed["light"]["tracking"] == "Subject"
+    assert run("set_light", name="Key", track=False)["light"]["tracking"] is None
+    spot = run("set_light", name="Key", kind="spot", spot_angle_degrees=30, spot_blend=0.5)
+    assert spot["light"]["type"] == "spot" and spot["light"]["spot_angle_degrees"] == 30
+    sun = run("set_light", kind="sun", rotation_degrees=[45, 0, 30], size=1)
+    assert sun["name"] == "SunLight" and sun["light"]["angle_degrees"] == 1
+
+    assert run_error("set_light", name="Subject", energy=1)[0] == "invalid_params"
+    assert run_error("set_light", name="Key", color="#ff0000", temperature_kelvin=5000)[0] == "invalid_params"
+    assert run_error("set_light", kind="point", spot_angle_degrees=20)[0] == "invalid_params"
+    assert run_error("set_light", kind="laser")[0] == "invalid_params"
+    assert run_error("set_light", kind="area", target="Ghost")[0] == "not_found"
+
+
+def check_setup_lighting_presets_replace_and_keep_hdri_worlds(tmp_path):
+    run("create_object", kind="monkey", name="Hero", location=[0, 0, 1])
+    run("set_light", name="OldLamp", kind="point", location=[0, 0, 5])
+    old_world = bpy.data.worlds.new("UserWorld")
+    bpy.context.scene.world = old_world
+    expected = {"three_point": 3, "studio": 4, "outdoor": 1, "dramatic": 2}
+    previous = []
+    for preset, count in expected.items():
+        result = run("setup_lighting", preset=preset, target=["Hero"])
+        assert len(result["lights"]) == count, preset
+        assert sorted(result["removed"]) == sorted(previous)
+        assert result["other_lights"] == ["OldLamp"] and result["world_replaced"] is True
+        assert result["world"] == bpy.context.scene.world.name and bpy.context.scene.world.name.startswith("MCP ")
+        for light in result["lights"]:
+            obj = bpy.data.objects[light["name"]]
+            if light["light"]["type"] != "sun":
+                assert _forward(obj).dot((bpy.data.objects["Hero"].location - obj.location).normalized()) > 0.99
+        previous = [light["name"] for light in result["lights"]]
+    assert old_world.use_fake_user  # the user's world survives saving
+    lights = [o.name for o in bpy.data.objects if o.type == "LIGHT"]
+    assert sorted(lights) == sorted(previous + ["OldLamp"])
+
+    hdr = _image_file(tmp_path / "sky.hdr", (0.5, 0.7, 1.0, 1.0), "HDR", float_buffer=True)
+    hdri_world = run("set_world_hdri", filepath=hdr)["world"]
+    kept = run("setup_lighting", preset="three_point", strength=2)
+    assert kept["world_replaced"] is False and bpy.context.scene.world.name == hdri_world
+    assert run("setup_lighting", preset="studio", world=True)["world_replaced"] is True
+    assert run_error("setup_lighting", preset="disco")[0] == "invalid_params"
+
+
+def check_setup_lighting_renders_lit_images():
+    run("create_object", kind="uv_sphere", name="Ball", location=[0, 0, 1])
+    run("create_object", kind="plane", name="Floor", size=8)
+    run("set_camera", view="iso", fit=["Ball"])
+    for preset in ("three_point", "outdoor"):
+        run("setup_lighting", preset=preset, target=["Ball"])
+        image = run("render_image", view="camera", engine="cycles", width=48, samples=2)
+        assert base64.b64decode(image["image_base64"]).startswith(b"\x89PNG")
+
+
+def check_set_camera_frames_aims_and_focuses():
+    run("create_object", kind="cube", name="Crate", location=[2, 1, 0.5], size=1)
+    run("create_object", kind="uv_sphere", name="Orb", location=[-1, 0, 2], size=0.5)
+    framed = run("set_camera", view="front", fit=["Crate", "Orb"], lens=35, resolution=[640, 360])
+    camera = bpy.context.scene.camera
+    assert framed["created"] is True and framed["camera"]["is_scene_camera"] and camera.name == framed["name"]
+    assert framed["camera"]["lens"] == 35 and framed["camera"]["resolution"] == [640, 360]
+    assert camera.location.y < -1 and _in_view(camera.name, ["Crate", "Orb"])
+
+    for view in ("top", "iso", "left"):
+        run("set_camera", view=view)
+        assert _in_view(camera.name, ["Crate", "Orb"]), view
+
+    aimed = run("set_camera", location=[0, -10, 3], target="Orb", focus="Orb", fstop=1.8)
+    assert aimed["created"] is False
+    assert _forward(camera).dot((bpy.data.objects["Orb"].location - camera.location).normalized()) > 0.999
+    assert aimed["camera"]["depth_of_field"] == {"enabled": True, "focus_object": "Orb",
+                                                  "focus_distance": aimed["camera"]["depth_of_field"]["focus_distance"],
+                                                  "fstop": 1.8}
+    distance = run("set_camera", focus=4.5)["camera"]["depth_of_field"]
+    assert distance["focus_object"] is None and distance["focus_distance"] == 4.5
+    assert run("set_camera", depth_of_field=False)["camera"]["depth_of_field"]["enabled"] is False
+    tracked = run("set_camera", name="Side", location=[8, 0, 2], target="Crate", track=True, make_active=False)
+    assert tracked["camera"]["tracking"] == "Crate" and bpy.context.scene.camera == camera
+
+    assert run_error("set_camera", view="front", location=[0, 0, 0])[0] == "invalid_params"
+    assert run_error("set_camera", name="Crate")[0] == "invalid_params"
+    assert run_error("set_camera", view="sideways")[0] == "invalid_params"
+    assert run_error("set_camera", track=True)[0] == "invalid_params"
+
+
+def check_keyframes_keep_full_turns_and_set_interpolation():
+    run("create_object", kind="cube", name="Spinner")
+    result = run("insert_keyframes", object_name="Spinner", interpolation="linear", keyframes=[
+        {"frame": 1, "location": [0, 0, 0], "rotation_degrees": [0, 0, 0]},
+        {"frame": 48, "location": [4, 0, 0], "rotation_degrees": [0, 0, 360], "scale": [2, 2, 2]},
+    ])
+    assert result["channels"] == ["location", "rotation_euler", "scale"]
+    assert result["animation_range"] == [1.0, 48.0] and result["interpolation"] == "LINEAR"
+    scene = bpy.context.scene
+    assert scene.frame_end >= 48
+    obj = bpy.data.objects["Spinner"]
+    scene.frame_set(48)
+    assert abs(obj.rotation_euler.z - 6.283185) < 1e-4  # a full turn, not collapsed to 0
+    scene.frame_set(24)
+    assert abs(obj.location.x - 4 * 23 / 47.0) < 1e-3  # linear motion
+    curves = addon._fcurves(obj)
+    assert curves and all(p.interpolation == "LINEAR" for c in curves for p in c.keyframe_points)
+    info = run("get_object_info", name="Spinner")
+    assert info["animated"] is True and info["animation_range"] == [1.0, 48.0]
+
+    run("set_light", name="Lamp", kind="point")
+    fade = run("insert_keyframes", object_name="Lamp", interpolation="constant", keyframes=[
+        {"frame": 1, "data": {"energy": 0}, "visible": True},
+        {"frame": 10, "data": {"energy": 900, "color": "#ff0000"}, "visible": False},
+    ])
+    assert fade["channels"] == ["color", "energy", "hide_render", "hide_viewport"]
+    scene.frame_set(10)
+    lamp = bpy.data.objects["Lamp"]
+    assert lamp.data.energy == 900 and lamp.hide_render is True
+    scene.frame_set(5)
+    assert lamp.data.energy == 0  # constant interpolation holds the value
+
+    assert run_error("insert_keyframes", object_name="Spinner", keyframes=[{"frame": 3}])[0] == "invalid_params"
+    assert run_error("insert_keyframes", object_name="Spinner", keyframes=[{"location": [0, 0, 0]}])[0] == "invalid_params"
+    assert run_error("insert_keyframes", object_name="Lamp",
+                     keyframes=[{"frame": 1, "data": {"no_such": 1}}])[0] == "invalid_params"
+    assert run_error("insert_keyframes", object_name="Spinner", interpolation="wobbly",
+                     keyframes=[{"frame": 1, "location": [0, 0, 0]}])[0] == "invalid_params"
+
+    cleared = run("clear_animation", object_names=["Spinner", "Lamp"])
+    assert cleared == {"cleared": ["Spinner", "Lamp"], "without_animation": []}
+    assert addon._fcurves(obj) == [] and addon._fcurves(lamp.data) == []
+
+
+def check_timeline_and_turntables():
+    timeline = run("set_timeline", frame_start=10, frame_end=57, fps=30, frame_current=12)
+    assert timeline == {"frame_start": 10, "frame_end": 57, "frame_current": 12, "fps": 30.0,
+                        "frames": 48, "seconds": 1.6}
+    assert run_error("set_timeline", frame_start=50, frame_end=20)[0] == "invalid_params"
+
+    run("create_object", kind="monkey", name="Statue", location=[1, 2, 1])
+    table = run("create_turntable", target=["Statue"], frames=60, frame_start=1, elevation_degrees=30)
+    scene = bpy.context.scene
+    camera, pivot = bpy.data.objects[table["camera"]], bpy.data.objects[table["spinning"]]
+    assert scene.camera == camera and camera.parent == pivot
+    assert (table["frame_start"], table["frame_end"], table["frames"]) == (1, 60, 60)
+    for frame in (1, 15, 30, 45, 60):
+        scene.frame_set(frame)
+        assert _in_view(camera.name, ["Statue"]), frame
+    scene.frame_set(61)
+    assert abs(pivot.rotation_euler.z - 6.283185) < 1e-4
+    scene.frame_set(31)
+    assert abs(pivot.rotation_euler.z - 3.141593) < 1e-4  # constant speed
+    again = run("create_turntable", target=["Statue"], frames=24)
+    assert sorted(again["removed"]) == sorted([table["camera"], table["spinning"]])
+    assert len([o for o in bpy.data.objects if o.get(addon.RIG_PROPERTY) == "turntable"]) == 2
+
+    spin = run("create_turntable", target=["Statue"], mode="object", frames=40, turns=-2)
+    statue = bpy.data.objects["Statue"]
+    scene.frame_set(41)
+    assert spin["spinning"] == "Statue" and abs(statue.rotation_euler.z + 4 * 3.141593) < 1e-4
+    assert run_error("create_turntable", mode="object")[0] == "invalid_params"
+    assert run_error("create_turntable", turns=0)[0] == "invalid_params"
+
+
+def _gif_frames(data):
+    assert data[:6] == b"GIF89a"
+    return data.count(b"\x21\xf9\x04")
+
+
+def check_render_animation_formats_and_restores_settings(tmp_path):
+    run("create_object", kind="cube", name="Box")
+    run("insert_keyframes", object_name="Box", keyframes=[
+        {"frame": 1, "location": [-1, 0, 0]}, {"frame": 4, "location": [1, 0, 0]}])
+    run("set_timeline", frame_start=1, frame_end=4, fps=12)
+    scene = bpy.context.scene
+    render = scene.render
+    settings = render.image_settings
+    if hasattr(settings, "media_type"):
+        settings.media_type = "VIDEO"  # Blender 5.0+ refused PNG previews in such scenes
+    settings.file_format = "FFMPEG"
+    before = (render.engine, render.resolution_x, render.resolution_y, render.fps, settings.file_format,
+              scene.frame_start, scene.frame_end, scene.frame_current, render.ffmpeg.format)
+
+    gif = run("render_animation", format="gif", filepath=str(tmp_path / "loop"), width=40, samples=1,
+              preview_frames=3)
+    assert gif["filepath"] == str(tmp_path / "loop.gif") and gif["frames"] == 4 and gif["fps"] == 12
+    assert _gif_frames((tmp_path / "loop.gif").read_bytes()) == 4
+    assert gif["preview_frames"] == [1, 2, 4] or gif["preview_frames"] == [1, 3, 4]
+    assert base64.b64decode(gif["image_base64"]).startswith(b"\x89PNG")
+
+    frames = run("render_animation", format="png", filepath=str(tmp_path / "frames"), width=32, samples=1,
+                 frame_step=2, preview_frames=0)
+    assert sorted(os.listdir(tmp_path / "frames")) == ["frame_0001.png", "frame_0003.png"]
+    assert frames["frames"] == 2 and "image_base64" not in frames and frames["seconds"] == 0.333
+
+    video = run("render_animation", format="mp4", filepath=str(tmp_path / "clip.mp4"), width=33, height=25,
+                samples=1, preview_frames=2)
+    data = (tmp_path / "clip.mp4").read_bytes()
+    assert video["size"] == [32, 24] and data[4:8] == b"ftyp" and video["bytes"] == len(data)
+    assert video["preview_frames"] == [1, 4]
+
+    still = run("render_image", view="iso", width=32, samples=1)
+    assert base64.b64decode(still["image_base64"]).startswith(b"\x89PNG")
+    after = (render.engine, render.resolution_x, render.resolution_y, render.fps, settings.file_format,
+             scene.frame_start, scene.frame_end, scene.frame_current, render.ffmpeg.format)
+    assert after == before
+    assert not [o.name for o in bpy.data.objects if o.name.startswith("MCP_")]
+    assert run_error("render_animation", format="webm")[0] == "invalid_params"
+    assert run_error("render_animation", format="gif", frame_start=1, frame_end=400)[0] == "invalid_params"
+
+
+def check_lights_camera_and_animation_through_mcp(tmp_path):
+    """The MCP tools (pydantic arguments, keyframe models, image results) against real Blender."""
+    pytest.importorskip("mcp")
+    from blenderMcp.config import Settings
+    from blenderMcp.server import build_server
+
+    addon.start_server(host="127.0.0.1", port=0, token="", allow_code=True, use_timer=False)
+    connection = BlenderConnection(port=addon._state["port"], timeout=60)
+    server = build_server(Settings(cache_dir=str(tmp_path / "cache")), connection)
+    outcome = _serve_while(lambda: run_tools(server, [
+        ("create_object", {"kind": "monkey", "name": "Hero", "location": [0, 0, 1]}),
+        ("set_camera", {"view": "front", "fit": ["Hero"], "resolution": [320, 240], "focus": "Hero"}),
+        ("setup_lighting", {"preset": "dramatic"}),
+        ("set_light", {"name": "Fill", "kind": "area", "location": [-3, -3, 2], "target": [0, 0, 1],
+                       "temperature_kelvin": 6500}),
+        ("insert_keyframes", {"object_name": "Hero", "interpolation": "linear", "keyframes": [
+            {"frame": 1, "rotation_degrees": [0, 0, 0]}, {"frame": 6, "rotation_degrees": [0, 0, 180]}]}),
+        ("set_timeline", {"frame_start": 1, "frame_end": 6, "fps": 6}),
+        ("render_animation", {"format": "gif", "filepath": str(tmp_path / "hero.gif"), "width": 48,
+                              "samples": 1, "preview_frames": 2}),
+    ]), timeout=180)
+    assert "error" not in outcome, outcome.get("error")
+    _, results = outcome["value"]
+    for result in results:
+        assert not is_error(result), text_of(result)
+    assert [block.type for block in results[-1].content] == ["image", "text"]
+    assert (tmp_path / "hero.gif").read_bytes().count(b"\x21\xf9\x04") == 6
+    hero = bpy.data.objects["Hero"]
+    bpy.context.scene.frame_set(6)
+    assert abs(hero.rotation_euler.z - 3.141593) < 1e-4
+    assert bpy.context.scene.camera.data.dof.focus_object == hero

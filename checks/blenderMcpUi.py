@@ -7,8 +7,8 @@ Run under a display, for example on Linux CI:
 It installs the add-on into isolated user folders the way a user would (extension
 zip on Blender 4.2+, legacy zip before), starts the bridge from its operator,
 opens the sidebar panel, and drives the bridge from outside: viewport screenshot,
-undo/redo, Workbench render, multi-view render, import/export in UI context, and
-panel drawing. A second launch checks "Start automatically". When the mcp
+undo/redo, Workbench render, multi-view render, import/export in UI context, a
+lighting preset, an auto-framed camera, a turntable rendered to GIF, and panel drawing. A second launch checks "Start automatically". When the mcp
 package is installed, it also runs tools through the real MCP server over stdio.
 """
 
@@ -209,6 +209,21 @@ def bridge_checks(connection, work, artifacts=None):
                                                         "location": [3, 0, 0]})
     check("export and import in UI context", exported["exists"] and imported["imported_objects"],
           str(imported["imported_objects"]))
+
+    lit = connection.send_command("setup_lighting", {"preset": "three_point"})
+    framed = connection.send_command("set_camera", {"view": "iso", "fit": ["UiCube"]})
+    check("lighting preset and auto-framed camera", len(lit["lights"]) == 3 and framed["camera"]["is_scene_camera"],
+          f"{[light['name'] for light in lit['lights']]}, camera {framed['name']}")
+    connection.send_command("insert_keyframes", {"object_name": "UiCube", "interpolation": "linear", "keyframes": [
+        {"frame": 1, "rotation_degrees": [0, 0, 0]}, {"frame": 8, "rotation_degrees": [0, 0, 90]}]})
+    connection.send_command("create_turntable", {"target": ["UiCube"], "frames": 8})
+    gif = connection.send_command("render_animation", {"format": "gif", "width": 96, "preview_frames": 4,
+                                                       "filepath": str(work / "turntable.gif")}, timeout=300)
+    keep("turntable_preview.png", gif["image_base64"])
+    data = Path(gif["filepath"]).read_bytes()
+    check("turntable GIF render", data[:6] == b"GIF89a" and data.count(b"\x21\xf9\x04") == 8
+          and png_lit_fraction(base64.b64decode(gif["image_base64"])) > 0.5,
+          f"{gif['frames']} frames, {gif['engine']}, {len(data)} bytes")
 
     panel = connection.send_command("execute_code", {"code": (
         "import bpy\n"
