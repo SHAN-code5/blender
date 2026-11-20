@@ -33,7 +33,9 @@ async def build(root):
     for i,(start,line) in enumerate(LINES):
         mp3=root/f'line_{i:02d}.mp3'
         if not mp3.exists():
-            await edge_tts.Communicate(line,'en-US-GuyNeural',rate='-10%',pitch='-4Hz').save(str(mp3))
+            tmp=mp3.with_suffix('.part')
+            await edge_tts.Communicate(line,'en-US-GuyNeural',rate='-10%',pitch='-4Hz').save(str(tmp))
+            tmp.replace(mp3)
         raw=subprocess.check_output(['ffmpeg','-v','error','-i',str(mp3),'-f','f32le','-ac','1','-ar',str(sr),'-'])
         data=np.frombuffer(raw,dtype='<f4')
         end=int(start*sr)+len(data)
