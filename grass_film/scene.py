@@ -36,7 +36,7 @@ if args.engine == 'CYCLES':
     S.cycles.use_denoising = True
     S.cycles.max_bounces = 4
     S.cycles.transmission_bounces = 3
-    S.cycles.use_persistent_data = True
+    S.render.use_persistent_data = True
 else:
     S.eevee.taa_render_samples = args.samples
 S.view_settings.view_transform = 'AgX'
