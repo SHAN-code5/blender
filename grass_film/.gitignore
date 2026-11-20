@@ -1,0 +1,7 @@
+__pycache__/
+*.blend*
+*.png
+*.mp4
+*.mp3
+*.wav
+*.log
