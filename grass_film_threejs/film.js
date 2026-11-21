@@ -13,7 +13,7 @@ const capture=new URLSearchParams(location.search).get('capture')==='1';
 if(capture)document.body.classList.add('capture');
 const W=1920,H=1080,DURATION=91;
 const renderer=new THREE.WebGLRenderer({antialias:false,preserveDrawingBuffer:true,powerPreference:'high-performance'});
-renderer.setPixelRatio(1);renderer.setSize(W,H);renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1;
+renderer.setPixelRatio(1);renderer.setSize(W,H,false);renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1;
 document.body.prepend(renderer.domElement);
 const meadow=createMeadow(), scene=meadow.scene;
 const camera=new THREE.PerspectiveCamera(42,W/H,.025,150);
