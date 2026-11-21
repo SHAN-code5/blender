@@ -1,0 +1,9 @@
+node_modules/
+vendor/
+media/
+__pycache__/
+*.mp4
+*.png
+*.wav
+*.mp3
+*.log

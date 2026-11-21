@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>The growing does not stop — a grass field film</title>
+  <link rel="icon" href="data:,">
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#060c0d;color:#f2f0dd;font:15px Georgia,serif;overflow:hidden}canvas{display:block;width:100vw;height:100vh;object-fit:contain}#intro{position:fixed;inset:0;display:grid;place-content:center;text-align:center;background:linear-gradient(0deg,#07100cdc,#07100c75);z-index:2;padding:24px}h1{font-weight:400;font-size:clamp(32px,5vw,68px);letter-spacing:-.03em;margin:20px 0}p{letter-spacing:.12em;line-height:1.8}button{font:inherit;color:inherit;background:#ecefd817;border:1px solid #c8d5b87a;border-radius:40px;padding:15px 32px;cursor:pointer}button:hover{background:#ecefd83b}#controls{position:fixed;bottom:24px;left:24px;right:24px;display:flex;gap:20px;align-items:center;opacity:0;transition:opacity .3s}body:hover #controls, #controls:focus-within{opacity:1}#seek{flex:1;accent-color:#dfdcaa}#caption{position:fixed;bottom:90px;width:100%;text-align:center;text-shadow:0 2px 12px #000;font-size:clamp(16px,1.5vw,25px);padding:0 20px;pointer-events:none}#error{color:#ffcaab;white-space:pre-wrap}.capture #intro,.capture #controls,.capture #caption{display:none}
+  </style>
+  <script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}</script>
+</head>
+<body>
+  <div id="intro"><p>A PROCEDURAL NATURE FILM · 91 SECONDS</p><h1>The growing does not stop</h1><p>A day in the grass. Best with sound.</p><button id="play" disabled>Preparing the meadow…</button><p id="error" role="alert"></p></div>
+  <div id="controls"><button id="pause" aria-label="Pause film">Pause</button><input id="seek" aria-label="Film time" type="range" min="0" max="91" step="0.01" value="0"><span id="clock">0:00 / 1:31</span><button id="cc" aria-pressed="false">CC</button></div>
+  <div id="caption" aria-live="off"></div>
+  <audio id="audio" preload="auto" src="./media/soundtrack.mp3"></audio>
+  <script type="module" src="./film.js"></script>
+</body>
+</html>

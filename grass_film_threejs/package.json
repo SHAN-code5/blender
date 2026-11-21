@@ -1,0 +1,15 @@
+{
+  "name": "grass-field-film-threejs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare-film": "python3 prepare.py",
+    "serve": "node serve.mjs",
+    "stills": "node capture.mjs --stills",
+    "capture": "node capture.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "25.18.1",
+    "three": "0.170.0"
+  }
+}
